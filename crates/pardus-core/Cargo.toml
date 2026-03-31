@@ -1,0 +1,38 @@
+[package]
+name = "pardus-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# HTML Parsing
+html5ever = "0.29"
+markup5ever = "0.14"
+tendril = "0.4"
+scraper = "0.22"
+
+# Async & HTTP
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "cookies", "gzip", "brotli", "deflate"] }
+url = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Cookie storage
+cookie_store = "0.21"
+
+# Arena allocation
+bumpalo = { version = "3", features = ["collections"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+indexmap = "2"

@@ -1,0 +1,207 @@
+use anyhow::Result;
+use std::sync::Arc;
+use std::time::Instant;
+
+use crate::OutputFormatArg;
+
+pub async fn run(
+    url: &str,
+    format: OutputFormatArg,
+    interactive_only: bool,
+    with_nav: bool,
+) -> Result<()> {
+    let start = Instant::now();
+
+    // Fetch and parse the page
+    println!(
+        "{:02}:{:02}  pardus-browser navigate {}",
+        0, 0, url
+    );
+
+    let app = pardus_core::App::new(pardus_core::BrowserConfig::default());
+    let page = match pardus_core::Page::from_url(&Arc::new(app), url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error fetching {url}: {e}");
+            anyhow::bail!("Failed to fetch URL: {e}");
+        }
+    };
+
+    let elapsed_connected = start.elapsed().as_secs();
+    let ms_connected = start.elapsed().as_millis() % 1000 / 10;
+    println!(
+        "{:02}:{:02}  connected — parsing semantic state…",
+        elapsed_connected, ms_connected
+    );
+
+    // Build semantic tree
+    let tree = page.semantic_tree();
+
+    // Filter interactive-only if requested
+    let tree = if interactive_only {
+        filter_interactive(&tree)
+    } else {
+        tree
+    };
+
+    let elapsed_parsed = start.elapsed().as_secs();
+    let ms_parsed = start.elapsed().as_millis() % 1000 / 10;
+
+    // Output based on format
+    match format {
+        OutputFormatArg::Md => {
+            let output = pardus_core::output::md_formatter::format_md(&tree);
+            for line in output.lines() {
+                if !line.trim().is_empty() {
+                    println!("       {}", line);
+                }
+            }
+        }
+        OutputFormatArg::Tree => {
+            let output = pardus_core::output::tree_formatter::format_tree(&tree);
+            for line in output.lines() {
+                if !line.trim().is_empty() {
+                    println!("       {}", line);
+                }
+            }
+        }
+        OutputFormatArg::Json => {
+            let nav_graph = if with_nav {
+                Some(page.navigation_graph())
+            } else {
+                None
+            };
+            let json = pardus_core::output::json_formatter::format_json(
+                &page.url,
+                page.title(),
+                &tree,
+                nav_graph.as_ref(),
+            )?;
+            println!("{}", json);
+            return Ok(());
+        }
+    }
+
+    // Stats line
+    println!(
+        "{:02}:{:02}  semantic tree ready — {} landmarks, {} links, {} headings, {} actions",
+        elapsed_parsed,
+        ms_parsed,
+        tree.stats.landmarks,
+        tree.stats.links,
+        tree.stats.headings,
+        tree.stats.actions,
+    );
+
+    // Navigation graph
+    if with_nav {
+        let nav = page.navigation_graph();
+        let elapsed_nav = start.elapsed().as_secs();
+        let ms_nav = start.elapsed().as_millis() % 1000 / 10;
+
+        if !nav.internal_links.is_empty() {
+            println!(
+                "{:02}:{:02}  navigation graph built — {} internal routes, {} external links",
+                elapsed_nav,
+                ms_nav,
+                nav.internal_links.len(),
+                nav.external_links.len(),
+            );
+        }
+    }
+
+    let elapsed_final = start.elapsed().as_secs();
+    let ms_final = start.elapsed().as_millis() % 1000 / 10;
+    println!(
+        "{:02}:{:02}  agent-ready: structured state exposed · no pixel buffer · 0 screenshots",
+        elapsed_final, ms_final,
+    );
+
+    Ok(())
+}
+
+/// Filter the semantic tree to only include interactive nodes.
+fn filter_interactive(tree: &pardus_core::SemanticTree) -> pardus_core::SemanticTree {
+    use pardus_core::{SemanticNode, SemanticRole, TreeStats};
+
+    fn filter_node(node: &SemanticNode) -> Option<SemanticNode> {
+        // Keep interactive nodes as-is (prune their non-interactive children)
+        if node.is_interactive {
+            let filtered_children: Vec<SemanticNode> = node
+                .children
+                .iter()
+                .filter_map(filter_node)
+                .collect();
+            return Some(SemanticNode {
+                children: filtered_children,
+                ..node.clone()
+            });
+        }
+
+        // Always recurse into children — keep this node only if it has
+        // interactive descendants or is a structural container (document/landmark)
+        let filtered_children: Vec<SemanticNode> = node
+            .children
+            .iter()
+            .filter_map(filter_node)
+            .collect();
+
+        if filtered_children.is_empty() {
+            return None;
+        }
+
+        Some(SemanticNode {
+            children: filtered_children,
+            ..node.clone()
+        })
+    }
+
+    let filtered_root = filter_node(&tree.root).unwrap_or_else(|| SemanticNode {
+        role: SemanticRole::Document,
+        name: None,
+        tag: "document".to_string(),
+        is_interactive: false,
+        is_disabled: false,
+        href: None,
+        action: None,
+        children: vec![],
+    });
+
+    let mut stats = TreeStats::default();
+    collect_stats(&filtered_root, &mut stats);
+    stats.total_nodes = count_all_nodes(&filtered_root);
+
+    pardus_core::SemanticTree {
+        root: filtered_root,
+        stats,
+    }
+}
+
+fn collect_stats(node: &pardus_core::SemanticNode, stats: &mut pardus_core::TreeStats) {
+    use pardus_core::SemanticRole;
+    if node.role.is_landmark() {
+        stats.landmarks += 1;
+    }
+    if matches!(node.role, SemanticRole::Link) {
+        stats.links += 1;
+    }
+    if node.role.is_heading() {
+        stats.headings += 1;
+    }
+    if matches!(node.role, SemanticRole::Form) {
+        stats.forms += 1;
+    }
+    if matches!(node.role, SemanticRole::Image) {
+        stats.images += 1;
+    }
+    if node.is_interactive {
+        stats.actions += 1;
+    }
+    for child in &node.children {
+        collect_stats(child, stats);
+    }
+}
+
+fn count_all_nodes(node: &pardus_core::SemanticNode) -> usize {
+    1 + node.children.iter().map(count_all_nodes).sum::<usize>()
+}
