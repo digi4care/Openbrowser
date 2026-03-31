@@ -21,6 +21,10 @@ AI agents don't need screenshots. They need to know what's on a page, what they 
 
 No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 
+## Demo
+
+[demo.mov](demo/demo.mov)
+
 ## Features
 
 - **Semantic tree output** — ARIA roles, headings, landmarks, interactive elements
