@@ -9,6 +9,8 @@ pub async fn run(
     format: OutputFormatArg,
     interactive_only: bool,
     with_nav: bool,
+    js: bool,
+    wait_ms: u32,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -19,11 +21,22 @@ pub async fn run(
     );
 
     let app = pardus_core::App::new(pardus_core::BrowserConfig::default());
-    let page = match pardus_core::Page::from_url(&Arc::new(app), url).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error fetching {url}: {e}");
-            anyhow::bail!("Failed to fetch URL: {e}");
+    let page = if js {
+        println!("       JS execution enabled — executing scripts…");
+        match pardus_core::Page::from_url_with_js(&Arc::new(app), url, wait_ms).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error fetching {url}: {e}");
+                anyhow::bail!("Failed to fetch URL: {e}");
+            }
+        }
+    } else {
+        match pardus_core::Page::from_url(&Arc::new(app), url).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error fetching {url}: {e}");
+                anyhow::bail!("Failed to fetch URL: {e}");
+            }
         }
     };
 

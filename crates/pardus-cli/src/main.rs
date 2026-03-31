@@ -27,9 +27,13 @@ enum Commands {
         #[arg(long)]
         interactive_only: bool,
 
-        /// Wait time in milliseconds for JS execution (not yet used)
+        /// Wait time in milliseconds for JS execution
         #[arg(long, default_value = "3000")]
         wait_ms: u32,
+
+        /// Enable JavaScript execution (for SPAs)
+        #[arg(long)]
+        js: bool,
 
         /// Include navigation graph
         #[arg(long)]
@@ -95,10 +99,11 @@ async fn main() -> Result<()> {
             url,
             format,
             interactive_only,
-            wait_ms: _,
+            wait_ms,
             with_nav,
             persistent: _,
             header: _,
+            js,
             verbose,
         } => {
             if verbose {
@@ -107,7 +112,7 @@ async fn main() -> Result<()> {
                     .init();
             }
 
-            commands::navigate::run(&url, format, interactive_only, with_nav).await?;
+            commands::navigate::run(&url, format, interactive_only, with_nav, js, wait_ms).await?;
         }
         Commands::Serve { host, port, timeout: _ } => {
             println!("CDP server not yet implemented — use 'navigate' mode for now");

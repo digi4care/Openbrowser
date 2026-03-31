@@ -42,6 +42,34 @@ impl Page {
         })
     }
 
+    /// Fetch a URL, execute JavaScript, and parse the resulting HTML.
+    pub async fn from_url_with_js(app: &Arc<App>, url: &str, wait_ms: u32) -> anyhow::Result<Self> {
+        let response = app.http_client.get(url).send().await?;
+        let status = response.status().as_u16();
+        let final_url = response.url().to_string();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let body = response.text().await?;
+
+        // Execute JS
+        let base_url = Self::extract_base_url(&Html::parse_document(&body), &final_url);
+        let final_body = crate::js::execute_js(&body, &base_url, wait_ms).await?;
+
+        let html = Html::parse_document(&final_body);
+        let base_url = Self::extract_base_url(&html, &final_url);
+
+        Ok(Self {
+            url: final_url,
+            status,
+            content_type,
+            html,
+            base_url,
+        })
+    }
+
     /// Parse an HTML string (useful for testing).
     pub fn from_html(html_str: &str, url: &str) -> Self {
         let html = Html::parse_document(html_str);

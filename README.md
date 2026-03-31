@@ -61,6 +61,12 @@ pardus-browser navigate https://example.com --interactive-only
 # Custom headers
 pardus-browser navigate https://api.example.com --header "Authorization: Bearer token"
 
+# Enable JavaScript execution (for SPAs like React/Vue/Angular)
+pardus-browser navigate https://example.com --js
+
+# JS with custom wait time (ms) for async rendering
+pardus-browser navigate https://example.com --js --wait-ms 5000
+
 # Verbose logging
 pardus-browser navigate https://example.com -v
 ```
@@ -178,7 +184,8 @@ pardus-browser
 
 ## Roadmap
 
-- [ ] **JavaScript execution** — Headless JS via V8 or deno_core for SPAs
+- [x] **JavaScript execution** — V8 via deno_core with custom DOM ops
+- [ ] **Full DOM API** — querySelector, event dispatching, complete Element API
 - [ ] **CDP WebSocket server** — Playwright/Puppeteer compatible API
 - [ ] **Page interaction** — Click, type, scroll, wait for selectors
 - [ ] **Session persistence** — Cookies, localStorage, auth flows
