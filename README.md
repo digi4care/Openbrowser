@@ -37,12 +37,16 @@ No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 
 ## Install
 
-From source (requires Rust 1.85+):
+From source (requires Rust nightly):
 
 ```bash
+# Install nightly toolchain
+rustup install nightly
+
+# Clone and build
 git clone https://github.com/user/pardus-browser.git
 cd pardus-browser
-cargo install --path crates/pardus-cli
+cargo +nightly install --path crates/pardus-cli
 ```
 
 ## Usage
@@ -65,7 +69,7 @@ pardus-browser navigate https://example.com --interactive-only
 # Custom headers
 pardus-browser navigate https://api.example.com --header "Authorization: Bearer token"
 
-# Enable JavaScript execution (for SPAs like React/Vue/Angular)
+# Enable JavaScript execution (EXPERIMENTAL - may hang on complex sites)
 pardus-browser navigate https://example.com --js
 
 # JS with custom wait time (ms) for async rendering
@@ -188,13 +192,54 @@ pardus-browser
 
 ## Roadmap
 
-- [x] **JavaScript execution** — V8 via deno_core with custom DOM ops
-- [ ] **Full DOM API** — querySelector, event dispatching, complete Element API
+### ✅ Working
+
+- [x] **Semantic tree output** — ARIA roles, headings, landmarks, interactive elements
+- [x] **Navigation graph** — Internal routes, external links, form descriptors
+- [x] **Multiple output formats** — Markdown, tree, JSON
+- [x] **Interactive-only mode** — Strip static content, show only actionable elements
+- [x] **Action annotations** — navigate, click, fill, toggle, select
+- [x] **Custom headers** — Pass authentication and custom headers
+- [x] **Cache management** — Clean cookies and cache
+
+### ⚠️ Experimental / Partial
+
+- [~] **JavaScript execution** — V8 via deno_core with custom DOM ops
+  - Infrastructure complete (deno_core, 35+ Rust ops, bootstrap.js)
+  - **Currently disabled** — hangs on JS-heavy sites (GitHub, etc.)
+  - Works on simple inline scripts
+  - Needs: smarter script filtering, async callback handling
+
+- [~] **Full DOM API** — querySelector, event dispatching, complete Element API
+  - ✅ `querySelector` / `querySelectorAll` with CSS selectors (via scraper crate)
+  - ✅ Event system (Event, CustomEvent, propagation phases)
+  - ✅ Element API: cloneNode, insertBefore, replaceChild, contains, etc.
+  - ✅ classList, dataset, style proxies
+  - ✅ 35+ Rust ops bridging JS ↔ Rust DOM
+  - ✅ 27 unit tests passing
+  - **Not usable yet** — blocked by JS execution being disabled
+
+### 🚧 Planned
+
+- [ ] **Network Debugger** — Request table for agent debugging
 - [ ] **CDP WebSocket server** — Playwright/Puppeteer compatible API
 - [ ] **Page interaction** — Click, type, scroll, wait for selectors
 - [ ] **Session persistence** — Cookies, localStorage, auth flows
 - [ ] **Proxy support** — HTTP/SOCKS proxies
 - [ ] **Screenshots** — Optional, for when pixels actually matter
+
+## Known Issues
+
+| Issue | Status | Workaround |
+|-------|--------|------------|
+| JS execution hangs on complex sites | 🔴 Open | Don't use `--js` flag |
+| External scripts not executed | ⚠️ By design | Only inline scripts supported |
+| setTimeout/setInterval no-ops | ⚠️ By design | Prevents infinite loops |
+
+## Requirements
+
+- **Rust nightly** required (deno_core uses `const_type_id` feature)
+- Install: `rustup install nightly`
 
 ## License
 
