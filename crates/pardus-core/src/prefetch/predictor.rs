@@ -2,7 +2,6 @@
 
 use dashmap::DashMap;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::trace;
 
 /// Simple Markov chain model for navigation prediction
@@ -13,6 +12,8 @@ pub struct NavigationPredictor {
     visit_counts: DashMap<String, usize>,
     /// Current session path
     session_path: parking_lot::Mutex<Vec<String>>,
+    /// Maximum number of transitions to keep
+    max_transitions: usize,
 }
 
 impl NavigationPredictor {
@@ -21,81 +22,91 @@ impl NavigationPredictor {
             transitions: DashMap::new(),
             visit_counts: DashMap::new(),
             session_path: parking_lot::Mutex::new(Vec::new()),
+            max_transitions: 10_000,
+        }
+    }
+
+    pub fn with_max_transitions(max: usize) -> Self {
+        Self {
+            transitions: DashMap::new(),
+            visit_counts: DashMap::new(),
+            session_path: parking_lot::Mutex::new(Vec::new()),
+            max_transitions: max,
         }
     }
 
     /// Record a navigation transition
-    pub fn record_transition(
-        &self,
-        from: &str,
-        to: &str,
-    ) {
+    pub fn record_transition(&self, from: &str, to: &str) {
         let key = (from.to_string(), to.to_string());
-        
+
         // Increment transition count
         *self.transitions.entry(key).or_insert(0) += 1;
-        
+
         // Increment visit count
         *self.visit_counts.entry(to.to_string()).or_insert(0) += 1;
-        
-        // Update session path
-        self.session_path.lock().push(from.to_string());
-        
+
+        // Update session path (cap at 1000 entries)
+        {
+            let mut path = self.session_path.lock();
+            path.push(from.to_string());
+            if path.len() > 1000 {
+                let drain_count = path.len() - 1000;
+                path.drain(0..drain_count);
+            }
+        }
+
+        // Evict oldest transitions if over limit
+        if self.transitions.len() > self.max_transitions {
+            let keys: Vec<_> = self
+                .transitions
+                .iter()
+                .take(100)
+                .map(|k| k.key().clone())
+                .collect();
+            for key in &keys {
+                self.transitions.remove(key);
+            }
+        }
+
         trace!("recorded transition: {} -> {}", from, to);
     }
 
     /// Predict next URLs based on current URL
-    pub fn predict_next(
-        &self,
-        current_url: &str,
-        max_predictions: usize,
-    ) -> Vec<String> {
-        let mut candidates: Vec<(String, f64)> = Vec::new();
-        
-        // Get all transitions from current URL
+    pub fn predict_next(&self, current_url: &str, max_predictions: usize) -> Vec<String> {
+        // Collect candidates and compute total in a single pass
+        let mut candidates: Vec<(String, usize)> = Vec::new();
+        let mut total: usize = 0;
+
         for entry in self.transitions.iter() {
             let ((from, to), count) = entry.pair();
             if from == current_url {
-                let probability = self.compute_probability(current_url, to, *count);
-                candidates.push((to.clone(), probability));
+                candidates.push((to.clone(), *count));
+                total += count;
             }
         }
-        
-        // Sort by probability (descending)
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        
-        // Return top N
-        candidates.into_iter()
+
+        if total == 0 || candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // Compute probabilities and sort
+        let mut scored: Vec<(String, f64)> = candidates
+            .into_iter()
+            .map(|(url, count)| {
+                let base_prob = count as f64 / total as f64;
+                let visit_count = self.visit_counts.get(&url).map(|v| *v).unwrap_or(0);
+                let popularity_boost = (visit_count as f64).ln_1p() / 10.0;
+                (url, (base_prob + popularity_boost).min(1.0))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        scored
+            .into_iter()
             .take(max_predictions)
             .map(|(url, _)| url)
             .collect()
-    }
-
-    /// Compute transition probability
-    fn compute_probability(
-        &self,
-        from: &str,
-        to: &str,
-        count: usize,
-    ) -> f64 {
-        // Total transitions from this page
-        let total: usize = self.transitions.iter()
-            .filter(|e| e.key().0 == from)
-            .map(|e| *e.value())
-            .sum();
-        
-        if total == 0 {
-            return 0.0;
-        }
-        
-        // P(to | from) = count(from -> to) / count(from -> *)
-        let base_prob = count as f64 / total as f64;
-        
-        // Boost based on overall popularity
-        let visit_count = self.visit_counts.get(to).map(|v| *v).unwrap_or(0);
-        let popularity_boost = (visit_count as f64).ln_1p() / 10.0;
-        
-        (base_prob + popularity_boost).min(1.0)
     }
 
     /// Predict based on sequence of recent pages
@@ -107,7 +118,7 @@ impl NavigationPredictor {
         if sequence.is_empty() {
             return Vec::new();
         }
-        
+
         // Use last page as primary predictor
         let last = sequence.last().unwrap().url.as_str();
         self.predict_next(last, max_predictions)
@@ -153,20 +164,15 @@ impl NavigationModel {
     }
 
     /// Train on a sequence of page visits
-    pub fn train(&self,
-        sequence: &[PageSequence],
-    ) {
+    pub fn train(&self, sequence: &[PageSequence]) {
         if sequence.len() <= self.order {
             return;
         }
-        
+
         for window in sequence.windows(self.order + 1) {
-            let state: Vec<String> = window[..self.order]
-                .iter()
-                .map(|p| p.url.clone())
-                .collect();
+            let state: Vec<String> = window[..self.order].iter().map(|p| p.url.clone()).collect();
             let next = window[self.order].url.clone();
-            
+
             self.transitions
                 .entry(state)
                 .or_insert_with(HashMap::new)
@@ -177,19 +183,19 @@ impl NavigationModel {
     }
 
     /// Predict next page from current state
-    pub fn predict(&self,
-        current_state: &[PageSequence],
-    ) -> Option<String> {
-        let state: Vec<String> = current_state.iter()
+    pub fn predict(&self, current_state: &[PageSequence]) -> Option<String> {
+        let state: Vec<String> = current_state
+            .iter()
             .rev()
             .take(self.order)
             .rev()
             .map(|p| p.url.clone())
             .collect();
-        
+
         self.transitions.get(&state).and_then(|transitions| {
             // Return most likely next state
-            transitions.iter()
+            transitions
+                .iter()
                 .max_by_key(|(_, count)| *count)
                 .map(|(url, _)| url.clone())
         })

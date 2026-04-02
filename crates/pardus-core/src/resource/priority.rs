@@ -82,7 +82,7 @@ impl<T> PriorityQueue<T> {
     }
 
     /// Peek at highest priority without removing
-    pub fn peek(&self) -> Option<&(u8, T)> {
+    pub fn peek(&self) -> Option<(&u8, &T)> {
         self.heap.peek().map(|pt| (&pt.priority, &pt.task))
     }
 

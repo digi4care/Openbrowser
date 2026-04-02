@@ -13,7 +13,6 @@ pub use priority::{PriorityQueue, PriorityTask};
 pub use pool::{ConnectionPool, H2Connection, PoolConfig};
 
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 /// Resource loading configuration
 #[derive(Debug, Clone)]
@@ -73,15 +72,18 @@ pub struct Resource {
     pub size_hint: Option<usize>,
 }
 
+use crate::cache::ResourceCache;
+
 /// Resource manager that coordinates all resource operations
 pub struct ResourceManager {
     scheduler: Arc<ResourceScheduler>,
+    #[allow(dead_code)]
     config: ResourceConfig,
 }
 
 impl ResourceManager {
-    pub fn new(config: ResourceConfig) -> Self {
-        let scheduler = Arc::new(ResourceScheduler::new(config.clone()));
+    pub fn new(client: reqwest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
+        let scheduler = Arc::new(ResourceScheduler::new(client, config.clone(), cache));
         Self { scheduler, config }
     }
 

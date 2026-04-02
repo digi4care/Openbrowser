@@ -1,7 +1,7 @@
+use base64::Engine;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use parking_lot::Mutex;
-use base64::Engine;
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,10 @@ pub struct SessionStore {
     raw_cookies: Mutex<Vec<StoredCookie>>,
     headers: Mutex<Vec<StoredHeader>>,
     local_storage: Mutex<HashMap<String, HashMap<String, String>>>,
+    /// If true, session data is kept in memory only and never written to disk.
+    ephemeral: bool,
+    /// If true, localStorage operations are disabled.
+    no_local_storage: bool,
 }
 
 impl SessionStore {
@@ -129,28 +133,65 @@ impl SessionStore {
             raw_cookies: Mutex::new(raw_cookies),
             headers: Mutex::new(headers),
             local_storage: Mutex::new(local_storage),
+            ephemeral: false,
+            no_local_storage: false,
+        })
+    }
+
+    /// Create an ephemeral (in-memory only) session store.
+    /// Data is kept in memory but never persisted to disk.
+    pub fn ephemeral(name: &str, cache_dir: &Path) -> SessionResult<Self> {
+        let session_dir = cache_dir.join("sessions").join(name);
+        // Don't create directories — we won't write to disk
+        Ok(Self {
+            session_dir,
+            cookies_path: PathBuf::new(),
+            headers_path: PathBuf::new(),
+            local_storage_path: PathBuf::new(),
+            jar: Mutex::new(cookie_store::CookieStore::default()),
+            raw_cookies: Mutex::new(Vec::new()),
+            headers: Mutex::new(Vec::new()),
+            local_storage: Mutex::new(HashMap::new()),
+            ephemeral: true,
+            no_local_storage: true,
         })
     }
 
     pub fn save(&self) -> SessionResult<()> {
+        // Ephemeral sessions skip disk persistence
+        if self.ephemeral {
+            return Ok(());
+        }
+
         {
             let raw = self.raw_cookies.lock();
             let mut lines = Vec::new();
             for c in raw.iter() {
                 lines.push(serde_json::to_string(c)?);
             }
-            std::fs::write(&self.cookies_path, lines.join("\n") + "\n")?;
+            let cookie_data = lines.join("\n") + "\n";
+            Self::atomic_write(&self.cookies_path, &cookie_data)?;
         }
         {
             let headers = self.headers.lock();
             let json = serde_json::to_string_pretty(&*headers)?;
-            std::fs::write(&self.headers_path, json)?;
+            Self::atomic_write(&self.headers_path, &json)?;
         }
         {
             let ls = self.local_storage.lock();
             let json = serde_json::to_string_pretty(&*ls)?;
-            std::fs::write(&self.local_storage_path, json)?;
+            Self::atomic_write(&self.local_storage_path, &json)?;
         }
+        Ok(())
+    }
+
+    fn atomic_write(path: &Path, data: &str) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, data)?;
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 
@@ -224,6 +265,9 @@ impl SessionStore {
     }
 
     pub fn local_storage_set(&self, origin: &str, key: &str, value: &str) {
+        if self.no_local_storage {
+            return;
+        }
         let mut ls = self.local_storage.lock();
         if ls.len() >= MAX_LOCAL_STORAGE_ORIGINS && !ls.contains_key(origin) {
             tracing::warn!(
@@ -268,17 +312,8 @@ impl SessionStore {
     pub fn cookies(&self, url: &Url) -> Option<HeaderValue> {
         let jar = self.jar.lock();
         let cookies: Vec<String> = jar
-            .iter_unexpired()
-            .filter_map(|c| {
-                let domain = c.domain().unwrap_or("");
-                let path = c.path().unwrap_or("/");
-                let host = url.host_str().unwrap_or("");
-                if host.ends_with(domain.trim_start_matches('.')) && url.path().starts_with(path) {
-                    Some(format!("{}={}", c.name(), c.value()))
-                } else {
-                    None
-                }
-            })
+            .get_request_values(url)
+            .map(|(name, value)| format!("{}={}", name, value))
             .collect();
         if cookies.is_empty() {
             None
@@ -304,17 +339,15 @@ impl SessionStore {
                 break;
             }
             if let Ok(s) = hv.to_str() {
-                for cookie_str in s.split(';').map(|s| s.trim()) {
-                    if !cookie_str.is_empty() {
-                        let header = format!("Set-Cookie: {}", cookie_str);
-                        if let Err(e) = jar.parse(&header, url) {
-                            tracing::debug!("failed to parse cookie: {}", e);
-                        } else {
-                            raw.push(StoredCookie {
-                                url: url.to_string(),
-                                header,
-                            });
-                        }
+                let cookie_str = s.trim();
+                if !cookie_str.is_empty() {
+                    if let Err(e) = jar.parse(cookie_str, url) {
+                        tracing::debug!("failed to parse cookie: {}", e);
+                    } else {
+                        raw.push(StoredCookie {
+                            url: url.to_string(),
+                            header: cookie_str.to_string(),
+                        });
                     }
                 }
             }
@@ -326,6 +359,29 @@ impl SessionStore {
         let mut raw = self.raw_cookies.lock();
         jar.clear();
         raw.clear();
+    }
+
+    pub fn delete_cookie(&self, name: &str, domain: &str, path: &str) -> bool {
+        let mut jar = self.jar.lock();
+        let removed = jar.remove(domain, path, name).is_some();
+        if removed {
+            let mut raw = self.raw_cookies.lock();
+            raw.retain(|c| {
+                let header_name = c
+                    .header
+                    .split(';')
+                    .next()
+                    .and_then(|s| s.splitn(2, '=').next())
+                    .map(|n| n.trim())
+                    .unwrap_or("");
+                header_name != name
+            });
+        }
+        removed
+    }
+
+    pub fn session_dir(&self) -> &Path {
+        &self.session_dir
     }
 
     pub fn list_sessions(cache_dir: &Path) -> SessionResult<Vec<String>> {
@@ -414,7 +470,10 @@ mod tests {
         let store2 = SessionStore::load("test", dir.path()).expect("failed to reload session");
         assert_eq!(store2.header_count(), 1);
         let headers = store2.headers();
-        assert_eq!(headers.get("X-Custom").and_then(|v| v.to_str().ok()), Some("value"));
+        assert_eq!(
+            headers.get("X-Custom").and_then(|v| v.to_str().ok()),
+            Some("value")
+        );
     }
 
     #[test]
@@ -442,8 +501,8 @@ mod tests {
         assert_eq!(name, "Authorization");
         assert_eq!(value, "Bearer my-token");
 
-        let (name, value) = SessionStore::parse_auth_header("basic:user:pass")
-            .expect("failed to parse basic auth");
+        let (name, value) =
+            SessionStore::parse_auth_header("basic:user:pass").expect("failed to parse basic auth");
         assert_eq!(name, "Authorization");
         assert!(value.starts_with("Basic "));
     }
@@ -517,7 +576,8 @@ mod tests {
         store.save().expect("failed to save");
         drop(store);
 
-        let store2 = SessionStore::load("persist-test", dir.path()).expect("failed to reload session");
+        let store2 =
+            SessionStore::load("persist-test", dir.path()).expect("failed to reload session");
         assert_eq!(
             store2.local_storage_get("https://example.com", "token"),
             Some("abc123".to_string())

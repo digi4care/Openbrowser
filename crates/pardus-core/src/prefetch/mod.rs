@@ -8,11 +8,8 @@ pub mod prefetcher;
 pub use predictor::{NavigationPredictor, NavigationModel, PageSequence};
 pub use prefetcher::{Prefetcher, PrefetchConfig, PrefetchJob};
 
-use std::collections::HashMap;
+use crate::cache::ResourceCache;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tracing::{trace, debug};
 
 /// Prefetch manager that coordinates prediction and fetching
 pub struct PrefetchManager {
@@ -22,10 +19,10 @@ pub struct PrefetchManager {
 }
 
 impl PrefetchManager {
-    pub fn new(config: PrefetchConfig) -> Self {
+    pub fn new(client: reqwest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
         let predictor = Arc::new(NavigationPredictor::new());
-        let prefetcher = Arc::new(Prefetcher::new(config.clone()));
-        
+        let prefetcher = Arc::new(Prefetcher::new(client, config.clone(), cache));
+
         Self {
             predictor,
             prefetcher,

@@ -63,6 +63,8 @@ pub struct DomDocument {
     mutation_records: Vec<MutationRecord>,
     observers: Vec<ObserverEntry>,
     next_observer_id: u32,
+    /// Maximum number of nodes allowed. None = unlimited.
+    max_nodes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +74,21 @@ pub enum DomNodeType {
     Document,
     DocumentFragment,
     Comment,
+    ShadowRoot,
+}
+
+/// Mode of a shadow root (open = pierceable, closed = hidden).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShadowRootMode {
+    Open,
+    Closed,
+}
+
+/// A shadow root attached to a host element.
+#[derive(Debug, Clone)]
+pub struct ShadowRoot {
+    pub mode: ShadowRootMode,
+    pub children: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +100,8 @@ pub struct DomNode {
     pub children: Vec<NodeId>,
     pub parent_id: Option<NodeId>,
     pub text_content: Option<String>,
+    /// Shadow root attached to this element (if this element is a shadow host).
+    pub shadow_root: Option<ShadowRoot>,
 }
 
 impl DomDocument {
@@ -103,6 +122,7 @@ impl DomDocument {
             mutation_records: Vec::new(),
             observers: Vec::new(),
             next_observer_id: 1,
+            max_nodes: None,
         };
 
         // Create document root
@@ -162,6 +182,7 @@ impl DomDocument {
                 children: Vec::new(),
                 parent_id,
                 text_content: None,
+                shadow_root: None,
             },
         );
         id
@@ -180,6 +201,7 @@ impl DomDocument {
                 children: Vec::new(),
                 parent_id,
                 text_content: None,
+                shadow_root: None,
             },
         );
         id
@@ -198,6 +220,7 @@ impl DomDocument {
                 children: Vec::new(),
                 parent_id,
                 text_content: Some(text.to_string()),
+                shadow_root: None,
             },
         );
         id
@@ -216,6 +239,7 @@ impl DomDocument {
                 children: Vec::new(),
                 parent_id,
                 text_content: Some(text.to_string()),
+                shadow_root: None,
             },
         );
         id
@@ -253,10 +277,6 @@ impl DomDocument {
                 let comment_id = self.alloc_comment(&comment.comment, Some(id));
                 self.nodes.get_mut(&id).unwrap().children.push(comment_id);
             }
-        }
-
-        if let Some(pid) = parent_id {
-            self.nodes.get_mut(&pid).unwrap().children.push(id);
         }
 
         id
@@ -446,7 +466,7 @@ impl DomDocument {
                     output.push('>');
                 }
             }
-            DomNodeType::Document | DomNodeType::DocumentFragment => {
+            DomNodeType::Document | DomNodeType::DocumentFragment | DomNodeType::ShadowRoot => {
                 for &child_id in &node.children {
                     self.serialize_node(child_id, output);
                 }
@@ -457,14 +477,17 @@ impl DomDocument {
     // ---- DOM manipulation ----
 
     pub fn create_element(&mut self, tag: &str) -> NodeId {
+        if !self.can_alloc() { return 0; }
         self.alloc_element(tag, None)
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
+        if !self.can_alloc() { return 0; }
         self.alloc_text(text, None)
     }
 
     pub fn create_document_fragment(&mut self) -> NodeId {
+        if !self.can_alloc() { return 0; }
         self.alloc_node(DomNodeType::DocumentFragment, None)
     }
 
@@ -677,6 +700,24 @@ impl DomDocument {
     }
 
     // ---- Accessors ----
+
+    /// Current number of nodes in the document.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Set the maximum number of nodes allowed.
+    pub fn set_max_nodes(&mut self, max: usize) {
+        self.max_nodes = Some(max);
+    }
+
+    /// Check if a new node can be created within the limit.
+    fn can_alloc(&self) -> bool {
+        match self.max_nodes {
+            Some(max) => self.nodes.len() < max,
+            None => true,
+        }
+    }
 
     pub fn document_element(&self) -> NodeId {
         self.document_element_id
@@ -1179,6 +1220,7 @@ impl DomDocument {
                 DomNodeType::Comment => 8,
                 DomNodeType::Document => 9,
                 DomNodeType::DocumentFragment => 11,
+                DomNodeType::ShadowRoot => 11,
             })
             .unwrap_or(0)
     }
@@ -1193,6 +1235,7 @@ impl DomDocument {
                 DomNodeType::Comment => "#comment".to_string(),
                 DomNodeType::Document => "#document".to_string(),
                 DomNodeType::DocumentFragment => "#document-fragment".to_string(),
+                DomNodeType::ShadowRoot => "#shadow-root".to_string(),
             })
             .unwrap_or_default()
     }

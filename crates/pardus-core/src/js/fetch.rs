@@ -1,50 +1,62 @@
 //! Fetch operation for deno_core.
 //!
-//! Provides JavaScript fetch API via reqwest with timeout and body size limits.
-//! Both the deno_core op and the legacy `execute_fetch` helper share a common
-//! core to avoid duplicating request building, header processing, and response
-//! handling logic.
+//! Provides JavaScript fetch API via reqwest with timeout, body size limits,
+//! and HTTP cache compliance (ETag, Last-Modified, conditional requests).
 
 use deno_core::*;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
-const OP_FETCH_TIMEOUT_MS: u64 = 10_000;
-const OP_FETCH_MAX_BODY_SIZE: usize = 1_048_576; // 1 MB
+use crate::cache::ResourceCache;
+use crate::url_policy::UrlPolicy;
 
-// ==================== URL Validation ====================
+const OP_FETCH_MAX_BODY_SIZE: usize = 1_048_576;
 
-/// Validate that a URL is safe to fetch (SSRF protection).
-///
-/// Blocks requests to private/reserved IP ranges and non-HTTP schemes.
-fn is_url_safe(url: &str) -> bool {
-    let parsed = match url::Url::parse(url) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
+// Sandbox: thread-local flag to block JS fetch without needing OpState in async context.
+// Set per-runtime-creation in execute_scripts_with_timeout.
+use std::sync::atomic::{AtomicBool, Ordering};
+static SANDBOX_FETCH_BLOCKED: AtomicBool = AtomicBool::new(false);
 
-    // Only allow http and https schemes
-    match parsed.scheme() {
-        "http" | "https" => {}
-        _ => return false,
-    }
-
-    // Block requests to localhost / loopback
-    if let Some(host) = parsed.host_str() {
-        if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
-            // Allow localhost for development/testing; can be tightened in production
-            return true;
-        }
-    }
-
-    true
+/// Set whether JS fetch should be blocked by sandbox policy.
+/// Called when creating the JS runtime thread.
+pub fn set_sandbox_fetch_blocked(blocked: bool) {
+    SANDBOX_FETCH_BLOCKED.store(blocked, Ordering::SeqCst);
 }
 
-// ==================== Shared Core ====================
+fn is_fetch_blocked_by_sandbox() -> bool {
+    SANDBOX_FETCH_BLOCKED.load(Ordering::SeqCst)
+}
 
-/// Build a reqwest request from method, URL, headers, and optional body.
+fn get_fetch_client() -> &'static reqwest::Client {
+    crate::http::client::fetch_client()
+}
+
+fn get_fetch_cache() -> &'static Arc<ResourceCache> {
+    static CACHE: OnceLock<Arc<ResourceCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(ResourceCache::new(100 * 1024 * 1024)))
+}
+
+/// Get the URL policy for JS fetch operations.
+/// Uses a strict default policy that blocks SSRF attacks.
+fn get_fetch_url_policy() -> &'static UrlPolicy {
+    static POLICY: OnceLock<UrlPolicy> = OnceLock::new();
+    POLICY.get_or_init(UrlPolicy::default)
+}
+
+/// Validate a URL for safe fetching.
+/// Blocks SSRF attacks by rejecting:
+/// - Non-HTTP(S) schemes (file://, ftp://, etc.)
+/// - Localhost and loopback addresses
+/// - Private IP ranges (10.x, 172.16-31.x, 192.168.x)
+/// - Link-local addresses (169.254.x.x)
+/// - Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
+fn is_url_safe(url: &str) -> bool {
+    get_fetch_url_policy().validate(url).is_ok()
+}
+
 fn build_request(
     client: &reqwest::Client,
     method: &str,
@@ -71,7 +83,6 @@ fn build_request(
     req
 }
 
-/// Extract response metadata (status, headers) into a HashMap.
 fn extract_response_headers(resp: &reqwest::Response) -> (u16, String, HashMap<String, String>) {
     let status = resp.status().as_u16();
     let status_text = resp
@@ -87,7 +98,6 @@ fn extract_response_headers(resp: &reqwest::Response) -> (u16, String, HashMap<S
     (status, status_text, headers)
 }
 
-/// Read response body with a size limit to prevent OOM.
 async fn read_body_with_limit(resp: reqwest::Response, max_size: usize) -> String {
     let mut bytes = Vec::with_capacity(1024.min(max_size));
     let mut stream = resp.bytes_stream();
@@ -108,34 +118,184 @@ async fn read_body_with_limit(resp: reqwest::Response, max_size: usize) -> Strin
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-// ==================== Fetch Op ====================
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchCacheMode {
+    Default,
+    NoStore,
+    ForceCache,
+    OnlyIfCached,
+}
+
+impl FetchCacheMode {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "no-store" => Self::NoStore,
+            "force-cache" => Self::ForceCache,
+            "only-if-cached" => Self::OnlyIfCached,
+            _ => Self::Default,
+        }
+    }
+}
 
 #[op2]
 #[serde]
 pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
-    // URL safety check
-    if !is_url_safe(&args.url) {
+    // Sandbox: block JS fetch if globally disabled
+    if is_fetch_blocked_by_sandbox() {
         return FetchResult {
             ok: false,
-            status: 0,
-            status_text: "Blocked: unsafe URL scheme".to_string(),
+            status: 403,
+            status_text: "Blocked: fetch is disabled by sandbox policy".to_string(),
             headers: HashMap::new(),
             body: String::new(),
         };
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(OP_FETCH_TIMEOUT_MS))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+    // Validate URL against SSRF protection policy
+    if !is_url_safe(&args.url) {
+        return FetchResult {
+            ok: false,
+            status: 0,
+            status_text: "Blocked: URL blocked by security policy (SSRF protection)".to_string(),
+            headers: HashMap::new(),
+            body: String::new(),
+        };
+    }
+
+    let client = get_fetch_client();
+    let cache_mode = args.cache.as_deref()
+        .map(FetchCacheMode::from_str)
+        .unwrap_or(FetchCacheMode::Default);
+
+    let is_get = args.method.eq_ignore_ascii_case("get");
+    let cache = get_fetch_cache();
+
+    if is_get && cache_mode != FetchCacheMode::NoStore {
+        if let Some(entry) = cache.get(&args.url) {
+            let guard = entry.read().unwrap();
+
+            match cache_mode {
+                FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached => {
+                    if guard.is_fresh() || cache_mode == FetchCacheMode::ForceCache {
+                        let body = String::from_utf8_lossy(&guard.content).to_string();
+                        let status = 200u16;
+                        let mut headers: HashMap<String, String> = guard.content_type
+                            .as_ref()
+                            .map(|ct| vec![("content-type".to_string(), ct.clone())])
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect();
+                        headers.insert("x-cache".to_string(), "hit".to_string());
+                        drop(guard);
+                        return FetchResult {
+                            ok: true,
+                            status,
+                            status_text: "OK".to_string(),
+                            headers,
+                            body,
+                        };
+                    }
+                    if cache_mode == FetchCacheMode::OnlyIfCached {
+                        drop(guard);
+                        return FetchResult {
+                            ok: false,
+                            status: 504,
+                            status_text: "Gateway Timeout (cache miss)".to_string(),
+                            headers: HashMap::new(),
+                            body: String::new(),
+                        };
+                    }
+                }
+                FetchCacheMode::Default => {
+                    if guard.is_fresh() {
+                        let body = String::from_utf8_lossy(&guard.content).to_string();
+                        let mut headers: HashMap<String, String> = guard.content_type
+                            .as_ref()
+                            .map(|ct| vec![("content-type".to_string(), ct.clone())])
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect();
+                        headers.insert("x-cache".to_string(), "hit".to_string());
+                        drop(guard);
+                        return FetchResult {
+                            ok: true,
+                            status: 200,
+                            status_text: "OK".to_string(),
+                            headers,
+                            body,
+                        };
+                    }
+
+                    if guard.cache_policy.has_validator {
+                        let cond_headers = guard.conditional_headers();
+                        drop(guard);
+
+                        let mut request = client.get(&args.url);
+                        for (name, value) in cond_headers.iter() {
+                            request = request.header(name, value);
+                        }
+                        for (k, v) in &args.headers {
+                            let k_lower = k.to_lowercase();
+                            if k_lower != "if-none-match" && k_lower != "if-modified-since" {
+                                request = request.header(k.as_str(), v.as_str());
+                            }
+                        }
+
+                        match request.send().await {
+                            Ok(resp) => {
+                                let status = resp.status().as_u16();
+                                let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
+                                let mut headers: HashMap<String, String> = resp.headers()
+                                    .iter()
+                                    .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
+                                    .collect();
+
+                                if status == 304 {
+                                    cache.update_from_304(&args.url, resp.headers());
+                                    if let Some(entry) = cache.get(&args.url) {
+                                        let guard = entry.read().unwrap();
+                                        let body = String::from_utf8_lossy(&guard.content).to_string();
+                                        headers.insert("x-cache".to_string(), "hit (304)".to_string());
+                                        drop(guard);
+                                        return FetchResult {
+                                            ok: true,
+                                            status: 200,
+                                            status_text: "OK".to_string(),
+                                            headers,
+                                            body,
+                                        };
+                                    }
+                                }
+
+                                let body = read_body_with_limit(resp, OP_FETCH_MAX_BODY_SIZE).await;
+                                if (200..300).contains(&status) {
+                                    cache.insert(&args.url, bytes::Bytes::from(body.clone()), None, &reqwest::header::HeaderMap::new());
+                                }
+                                headers.insert("x-cache".to_string(), "miss".to_string());
+                                return FetchResult {
+                                    ok: (200..300).contains(&status),
+                                    status,
+                                    status_text,
+                                    headers,
+                                    body,
+                                };
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    // Fall through to full fetch
+                }
+                FetchCacheMode::NoStore => {}
+            }
+        }
+    }
 
     let req = build_request(&client, &args.method, &args.url, &args.headers, &args.body);
 
     match req.send().await {
         Ok(resp) => {
-            let (status, status_text, headers) = extract_response_headers(&resp);
+            let (status, status_text, mut headers) = extract_response_headers(&resp);
 
-            // Check content-length before streaming body
             let content_length: Option<usize> = resp
                 .headers()
                 .get("content-length")
@@ -153,6 +313,17 @@ pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
             }
 
             let body = read_body_with_limit(resp, OP_FETCH_MAX_BODY_SIZE).await;
+
+            if is_get && cache_mode != FetchCacheMode::NoStore && (200..300).contains(&status) {
+                cache.insert(
+                    &args.url,
+                    bytes::Bytes::from(body.clone()),
+                    headers.get("content-type").cloned(),
+                    &reqwest::header::HeaderMap::new(),
+                );
+            }
+
+            headers.insert("x-cache".to_string(), "miss".to_string());
 
             FetchResult {
                 ok: status >= 200 && status < 300,
@@ -172,14 +343,15 @@ pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
     }
 }
 
-// ==================== Types ====================
-
 #[derive(Deserialize)]
 pub struct FetchArgs {
     pub url: String,
     pub method: String,
+    #[serde(default)]
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
+    #[serde(default)]
+    pub cache: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -190,8 +362,6 @@ pub struct FetchResult {
     pub headers: HashMap<String, String>,
     pub body: String,
 }
-
-// ==================== Legacy Types (for external use) ====================
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FetchRequest {
@@ -217,16 +387,12 @@ pub struct FetchResponse {
     pub ok: bool,
 }
 
-/// Execute a fetch request via reqwest (legacy helper for non-op usage).
-///
-/// Shares the same request building and body-limiting logic as `op_fetch`.
 pub async fn execute_fetch(
     client: reqwest::Client,
     request: FetchRequest,
 ) -> anyhow::Result<FetchResponse> {
-    // URL safety check
     if !is_url_safe(&request.url) {
-        anyhow::bail!("Blocked: unsafe URL scheme for {}", request.url);
+        anyhow::bail!("URL blocked by security policy (SSRF protection): {}", request.url);
     }
 
     let req = build_request(
@@ -249,4 +415,124 @@ pub async fn execute_fetch(
         body,
         ok,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_url_safe_allows_public_urls() {
+        assert!(is_url_safe("https://example.com"));
+        assert!(is_url_safe("http://example.com/path?query=1"));
+        assert!(is_url_safe("https://api.example.com:8080/v1/data"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_file_scheme() {
+        assert!(!is_url_safe("file:///etc/passwd"));
+        assert!(!is_url_safe("file://localhost/Users/test"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_ftp_scheme() {
+        assert!(!is_url_safe("ftp://ftp.example.com/file"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_data_scheme() {
+        assert!(!is_url_safe("data:text/html,<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_javascript_scheme() {
+        assert!(!is_url_safe("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_localhost() {
+        assert!(!is_url_safe("http://localhost/admin"));
+        assert!(!is_url_safe("http://LOCALHOST/admin"));
+        assert!(!is_url_safe("http://localhost.localdomain/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_loopback() {
+        assert!(!is_url_safe("http://127.0.0.1/admin"));
+        assert!(!is_url_safe("http://127.0.0.1:8080/api"));
+        assert!(!is_url_safe("http://[::1]/admin"));
+        assert!(!is_url_safe("http://[0:0:0:0:0:0:0:1]/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_private_ips() {
+        // 10.0.0.0/8
+        assert!(!is_url_safe("http://10.0.0.1/"));
+        assert!(!is_url_safe("http://10.255.255.255/"));
+
+        // 172.16.0.0/12
+        assert!(!is_url_safe("http://172.16.0.1/"));
+        assert!(!is_url_safe("http://172.31.255.255/"));
+        // 172.15.x.x is public
+        assert!(is_url_safe("http://172.15.0.1/"));
+        // 172.32.x.x is public
+        assert!(is_url_safe("http://172.32.0.1/"));
+
+        // 192.168.0.0/16
+        assert!(!is_url_safe("http://192.168.0.1/"));
+        assert!(!is_url_safe("http://192.168.1.1/"));
+        assert!(!is_url_safe("http://192.168.255.255/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_allows_public_ips() {
+        assert!(is_url_safe("http://8.8.8.8/"));
+        assert!(is_url_safe("http://1.1.1.1/"));
+        assert!(is_url_safe("http://93.184.216.34/")); // example.com IP
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_cloud_metadata() {
+        // AWS/GCP/Azure metadata endpoint
+        assert!(!is_url_safe("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_url_safe("http://metadata.google.internal/computeMetadata/v1/"));
+        assert!(!is_url_safe("http://metadata.azure.internal/"));
+        // Alibaba metadata
+        assert!(!is_url_safe("http://100.100.100.200/latest/meta-data/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_link_local() {
+        assert!(!is_url_safe("http://169.254.1.1/"));
+        assert!(!is_url_safe("http://169.254.100.50/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_invalid_urls() {
+        assert!(!is_url_safe("not-a-url"));
+        assert!(!is_url_safe("://no-scheme.com"));
+        assert!(!is_url_safe(""));
+    }
+
+    #[test]
+    fn test_is_url_safe_case_insensitive_scheme() {
+        assert!(is_url_safe("HTTPS://example.com"));
+        assert!(is_url_safe("HtTp://example.com"));
+    }
+
+    #[test]
+    fn test_is_url_safe_ipv6_addresses() {
+        // Public IPv6 should work
+        assert!(is_url_safe("http://[2001:4860:4860::8888]/"));
+
+        // Loopback IPv6 blocked
+        assert!(!is_url_safe("http://[::1]/"));
+
+        // Link-local IPv6 blocked
+        assert!(!is_url_safe("http://[fe80::1]/"));
+
+        // Unique local (private) IPv6 blocked
+        assert!(!is_url_safe("http://[fc00::1]/"));
+        assert!(!is_url_safe("http://[fd00::1]/"));
+    }
 }

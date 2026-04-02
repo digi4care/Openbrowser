@@ -1,19 +1,20 @@
 use anyhow::Result;
 use std::time::Instant;
 
-use pardus_core::{FormState, InteractionResult, ScrollDirection};
+use pardus_core::{BrowserConfig, FormState, InteractionResult, ScrollDirection};
 
 use crate::{InteractAction, OutputFormatArg};
 
-pub async fn run(
+pub async fn run_with_config(
     url: &str,
     action: InteractAction,
     format: OutputFormatArg,
     js: bool,
     wait_ms: u32,
+    browser_config: BrowserConfig,
 ) -> Result<()> {
     let start = Instant::now();
-    let mut browser = pardus_core::Browser::new(pardus_core::BrowserConfig::default());
+    let mut browser = pardus_core::Browser::new(browser_config);
 
     // Navigate first
     if js {
@@ -30,8 +31,16 @@ pub async fn run(
             let result = browser.click(&selector).await?;
             output_result(&result, &format);
         }
+        InteractAction::ClickId { id } => {
+            let result = browser.click_by_id(id).await?;
+            output_result(&result, &format);
+        }
         InteractAction::Type { selector, value } => {
-            let result = browser.type_text(&selector, &value)?;
+            let result = browser.type_text(&selector, &value).await?;
+            output_result(&result, &format);
+        }
+        InteractAction::TypeId { id, value } => {
+            let result = browser.type_by_id(id, &value).await?;
             output_result(&result, &format);
         }
         InteractAction::Submit { selector, field } => {
@@ -94,6 +103,10 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                     .unwrap_or_default();
                     println!("{}", json);
                 }
+                OutputFormatArg::Llm => {
+                    let output = pardus_core::output::llm_formatter::format_llm(&tree);
+                    println!("{}", output);
+                }
             }
         }
         InteractionResult::Typed { selector, value } => {
@@ -141,6 +154,10 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                     )
                     .unwrap_or_default();
                     println!("{}", json);
+                }
+                OutputFormatArg::Llm => {
+                    let output = pardus_core::output::llm_formatter::format_llm(&tree);
+                    println!("{}", output);
                 }
             }
         }

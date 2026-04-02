@@ -1,112 +1,68 @@
 use crate::config::BrowserConfig;
-use crate::interact::{ElementHandle, FormState, InteractionResult, ScrollDirection};
 use pardus_debug::NetworkLog;
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::Mutex;
+use url::Url;
 
 pub struct App {
     pub http_client: reqwest::Client,
-    pub config: BrowserConfig,
+    pub config: RwLock<BrowserConfig>,
     pub network_log: Arc<Mutex<NetworkLog>>,
 }
 
 impl App {
     pub fn new(config: BrowserConfig) -> Self {
-        let http_client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .user_agent(&config.user_agent)
-            .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
-            .cookie_store(true)
-            .build()
-            .expect("failed to build HTTP client");
+            .timeout(std::time::Duration::from_millis(config.timeout_ms as u64));
+
+        // Sandbox: disable cookie store for ephemeral sessions
+        if !config.sandbox.ephemeral_session {
+            client_builder = client_builder.cookie_store(true);
+        }
+
+        // Certificate pinning: use custom TLS connector when pins are configured
+        if let Some(pinning) = &config.cert_pinning {
+            if !pinning.pins.is_empty() || !pinning.default_pins.is_empty() {
+                client_builder = match crate::tls::pinned_client_builder(client_builder, pinning) {
+                    Ok(builder) => builder,
+                    Err(e) => {
+                        tracing::warn!(
+                            "certificate pinning setup failed, using default TLS: {}",
+                            e
+                        );
+                        // Rebuild without pinning since builder was moved
+                        let mut new_builder = reqwest::Client::builder()
+                            .user_agent(&config.user_agent)
+                            .timeout(std::time::Duration::from_millis(config.timeout_ms as u64));
+                        if !config.sandbox.ephemeral_session {
+                            new_builder = new_builder.cookie_store(true);
+                        }
+                        new_builder
+                    }
+                };
+            }
+        }
+
+        let http_client = client_builder.build().expect("failed to build HTTP client");
 
         Self {
             http_client,
-            config,
+            config: RwLock::new(config),
             network_log: Arc::new(Mutex::new(NetworkLog::new())),
         }
     }
 
-    pub fn default() -> Arc<Self> {
-        Arc::new(Self::new(BrowserConfig::default()))
+    /// Validate a URL against the configured security policy.
+    ///
+    /// Returns an parsed URL if valid, or an error if the URL violates the policy.
+    pub fn validate_url(&self, url: &str) -> anyhow::Result<Url> {
+        self.config.read().url_policy.validate(url)
     }
 
-    /// Click on an element identified by handle.
-    pub async fn click(
-        self: &Arc<Self>,
-        page: &crate::Page,
-        handle: &ElementHandle,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::actions::click(self, page, handle).await
-    }
-
-    /// Click on an element identified by CSS selector.
-    pub async fn click_selector(
-        self: &Arc<Self>,
-        page: &crate::Page,
-        selector: &str,
-    ) -> anyhow::Result<InteractionResult> {
-        match page.query(selector) {
-            Some(handle) => self.click(page, &handle).await,
-            None => Ok(InteractionResult::ElementNotFound {
-                selector: selector.to_string(),
-                reason: "no element matches selector".to_string(),
-            }),
-        }
-    }
-
-    /// Type a value into a form field.
-    pub fn type_text(
-        page: &crate::Page,
-        handle: &ElementHandle,
-        value: &str,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::actions::type_text(page, handle, value)
-    }
-
-    /// Submit a form with the given field values.
-    pub async fn submit_form(
-        self: &Arc<Self>,
-        page: &crate::Page,
-        form_selector: &str,
-        state: &FormState,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::form::submit_form(self, page, form_selector, state).await
-    }
-
-    /// Toggle a checkbox or radio.
-    pub fn toggle(
-        page: &crate::Page,
-        handle: &ElementHandle,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::actions::toggle(page, handle)
-    }
-
-    /// Select an option in a <select> element.
-    pub fn select_option(
-        page: &crate::Page,
-        handle: &ElementHandle,
-        value: &str,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::actions::select_option(page, handle, value)
-    }
-
-    /// Wait for a CSS selector to appear.
-    pub async fn wait_for_selector(
-        self: &Arc<Self>,
-        page: &crate::Page,
-        selector: &str,
-        timeout_ms: u32,
-        interval_ms: u32,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::wait::wait_for_selector(self, page, selector, timeout_ms, interval_ms).await
-    }
-
-    /// Scroll the page.
-    pub async fn scroll(
-        self: &Arc<Self>,
-        page: &crate::Page,
-        direction: ScrollDirection,
-    ) -> anyhow::Result<InteractionResult> {
-        crate::interact::scroll::scroll(self, page, direction).await
+    /// Get a snapshot of the current configuration.
+    pub fn config_snapshot(&self) -> BrowserConfig {
+        self.config.read().clone()
     }
 }

@@ -4,6 +4,7 @@
 
 use super::fetch::op_fetch;
 use super::ops::*;
+use super::sse::*;
 
 deno_core::extension!(
     pardus_dom,
@@ -61,5 +62,10 @@ deno_core::extension!(
         op_disconnect_observer,
         op_take_mutation_records,
         op_has_observers,
+        // SSE / EventSource
+        op_sse_open,
+        op_sse_close,
+        op_sse_ready_state,
+        op_sse_url,
     ],
 );

@@ -561,7 +561,7 @@ const window = {
   fetch,
   addEventListener: document.addEventListener.bind(document),
   removeEventListener: document.removeEventListener.bind(document),
-  location: {
+  location: new Proxy({
     href: "",
     origin: "",
     protocol: "https:",
@@ -570,7 +570,19 @@ const window = {
     pathname: "/",
     search: "",
     hash: ""
-  },
+  }, {
+    set(target, prop, value) {
+      target[prop] = value;
+      // Detect navigation via window.location.href = '/url'
+      if (prop === 'href') {
+        var docEl = document.documentElement;
+        if (docEl) {
+          docEl.setAttribute('data-pardus-navigation-href', String(value));
+        }
+      }
+      return true;
+    }
+  }),
   navigator: { userAgent: "PardusBrowser/0.1.0" },
   console: {
     log(...a) {},
@@ -603,6 +615,124 @@ const window = {
   CustomEvent,
 };
 
+// ==================== EventSource / SSE ====================
+
+const __sseInstances = new Map();
+const __sseCallbacks = new Map();
+
+function __sse_dispatch(id, eventType, eventInit, readyState) {
+  const es = __sseInstances.get(id);
+  if (!es) return;
+  const cb = __sseCallbacks.get(id);
+  if (!cb) return;
+
+  if (readyState !== undefined) {
+    es.readyState = readyState;
+  }
+
+  const event = new MessageEvent(eventType, eventInit);
+
+  const listeners = (cb.listeners && cb.listeners[eventType]) || [];
+  for (const fn of listeners) {
+    try { fn.call(es, event); } catch (e) {}
+  }
+
+  if (eventType === 'open' && cb.onopen) {
+    try { cb.onopen.call(es, event); } catch (e) {}
+  }
+  if (eventType === 'message' && cb.onmessage) {
+    try { cb.onmessage.call(es, event); } catch (e) {}
+  }
+  if (eventType === 'error' && cb.onerror) {
+    try { cb.onerror.call(es, event); } catch (e) {}
+  }
+}
+
+class MessageEvent {
+  constructor(type, eventInitDict) {
+    eventInitDict = eventInitDict || {};
+    this.type = type;
+    this.data = eventInitDict.data !== undefined ? eventInitDict.data : null;
+    this.origin = eventInitDict.origin || '';
+    this.lastEventId = eventInitDict.lastEventId || '';
+    this.bubbles = false;
+    this.cancelable = false;
+    this.composed = false;
+  }
+}
+
+class EventSource {
+  constructor(url) {
+    const absoluteUrl = typeof URL !== 'undefined'
+      ? new URL(url, globalThis.window ? globalThis.window.location.href : url).href
+      : url;
+    this.url = absoluteUrl;
+    this.readyState = EventSource.CONNECTING;
+    this.__id = Deno.core.ops.op_sse_open(absoluteUrl);
+    __sseInstances.set(this.__id, this);
+    __sseCallbacks.set(this.__id, {
+      onopen: null,
+      onmessage: null,
+      onerror: null,
+      listeners: {}
+    });
+  }
+
+  get onopen() {
+    const cb = __sseCallbacks.get(this.__id);
+    return cb ? cb.onopen : null;
+  }
+  set onopen(fn) {
+    const cb = __sseCallbacks.get(this.__id);
+    if (cb) cb.onopen = typeof fn === 'function' ? fn : null;
+  }
+
+  get onmessage() {
+    const cb = __sseCallbacks.get(this.__id);
+    return cb ? cb.onmessage : null;
+  }
+  set onmessage(fn) {
+    const cb = __sseCallbacks.get(this.__id);
+    if (cb) cb.onmessage = typeof fn === 'function' ? fn : null;
+  }
+
+  get onerror() {
+    const cb = __sseCallbacks.get(this.__id);
+    return cb ? cb.onerror : null;
+  }
+  set onerror(fn) {
+    const cb = __sseCallbacks.get(this.__id);
+    if (cb) cb.onerror = typeof fn === 'function' ? fn : null;
+  }
+
+  addEventListener(type, callback) {
+    const cb = __sseCallbacks.get(this.__id);
+    if (!cb) return;
+    if (!cb.listeners[type]) cb.listeners[type] = [];
+    if (!cb.listeners[type].includes(callback)) {
+      cb.listeners[type].push(callback);
+    }
+  }
+
+  removeEventListener(type, callback) {
+    const cb = __sseCallbacks.get(this.__id);
+    if (!cb || !cb.listeners[type]) return;
+    const idx = cb.listeners[type].indexOf(callback);
+    if (idx >= 0) cb.listeners[type].splice(idx, 1);
+  }
+
+  close() {
+    Deno.core.ops.op_sse_close(this.__id);
+    this.readyState = EventSource.CLOSED;
+    __sseInstances.delete(this.__id);
+    __sseCallbacks.delete(this.__id);
+  }
+
+  static get CONNECTING() { return 0; }
+  static get OPEN() { return 1; }
+  static get CLOSED() { return 2; }
+}
+
 // ==================== Globals ====================
 
 globalThis.window = window;
@@ -614,6 +744,8 @@ globalThis.DocumentFragment = DocumentFragment;
 globalThis.Event = Event;
 globalThis.CustomEvent = CustomEvent;
 globalThis.MutationObserver = MutationObserver;
+globalThis.MessageEvent = MessageEvent;
+globalThis.EventSource = EventSource;
 globalThis.Node = {
   ELEMENT_NODE: 1,
   TEXT_NODE: 3,

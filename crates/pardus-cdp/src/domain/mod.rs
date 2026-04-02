@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::protocol::event_bus::EventSender;
+use crate::protocol::event_bus::EventBus;
 use crate::protocol::node_map::NodeMap;
 use crate::protocol::target::CdpSession;
 use crate::error::{CdpError, CdpErrorBody};
@@ -25,70 +25,127 @@ pub struct DomainContext {
     /// The App instance (HTTP client, config, network log).
     pub app: Arc<pardus_core::App>,
     /// Target store: target_id -> TargetEntry.
+    /// Stores raw HTML rather than parsed Page to avoid !Send types from scraper.
     pub targets: Arc<Mutex<HashMap<String, TargetEntry>>>,
     /// Event bus sender for pushing events to clients.
-    pub event_tx: EventSender,
+    pub event_bus: Arc<EventBus>,
     /// Node map for this session (backendNodeId <-> selector).
     pub node_map: Arc<Mutex<NodeMap>>,
 }
 
 impl DomainContext {
-    /// Get raw HTML for a target.
-    pub fn get_html(&self, target_id: &str) -> Option<String> {
-        let targets = self.targets.blocking_lock();
+    /// Create a new DomainContext with the given App.
+    pub fn new(
+        app: Arc<pardus_core::App>,
+        targets: Arc<Mutex<HashMap<String, TargetEntry>>>,
+        event_bus: Arc<EventBus>,
+        node_map: Arc<Mutex<NodeMap>>,
+    ) -> Self {
+        Self {
+            app,
+            targets,
+            event_bus,
+            node_map,
+        }
+    }
+
+    /// Create a temporary Browser from the App configuration.
+    /// 
+    /// This allows using the unified Browser API while keeping DomainContext Send+Sync.
+    /// The Browser is created on-demand and not stored in DomainContext.
+    pub fn create_browser(&self) -> pardus_core::Browser {
+        let config = self.app.config_snapshot();
+        pardus_core::Browser::new(config)
+    }
+}
+
+impl DomainContext {
+    pub async fn get_html(&self, target_id: &str) -> Option<String> {
+        let targets = self.targets.lock().await;
         targets.get(target_id).and_then(|e| e.html.clone())
     }
 
-    /// Get URL for a target.
-    pub fn get_url(&self, target_id: &str) -> Option<String> {
-        let targets = self.targets.blocking_lock();
+    pub async fn get_url(&self, target_id: &str) -> Option<String> {
+        let targets = self.targets.lock().await;
         targets.get(target_id).map(|e| e.url.clone())
     }
 
-    /// Get title for a target.
-    pub fn get_title(&self, target_id: &str) -> Option<String> {
-        let targets = self.targets.blocking_lock();
+    pub async fn get_title(&self, target_id: &str) -> Option<String> {
+        let targets = self.targets.lock().await;
         targets.get(target_id).and_then(|e| e.title.clone())
     }
 
-    /// Fetch a URL, store the result.
-    pub async fn navigate(&self, target_id: &str, url: &str) -> anyhow::Result<()> {
-        let page = pardus_core::Page::from_url(&self.app, url).await?;
-        self.update_target(target_id, &page);
-        Ok(())
+    pub async fn get_target_entry(&self, target_id: &str) -> Option<TargetEntry> {
+        let targets = self.targets.lock().await;
+        targets.get(target_id).cloned()
     }
 
-    /// Update target entry with new page data.
-    pub fn update_target(&self, target_id: &str, page: &pardus_core::Page) {
-        let title = page.title();
-        let html_str = page.html.html().to_string();
-        let url = page.url.clone();
+    /// Navigate to a URL using the App API.
+    /// 
+    /// Note: Uses App directly rather than Browser because Browser contains
+    /// !Send types (scraper::Html in Page) that cannot be held across await
+    /// points in CDP handlers which must be Send.
+    pub async fn navigate(&self, target_id: &str, url: &str) -> anyhow::Result<()> {
+        let (final_url, html_str, title) = {
+            let page = pardus_core::Page::from_url(&self.app, url).await?;
+            (page.url.clone(), page.html.html().to_string(), page.title())
+        };
+        let mut targets = self.targets.lock().await;
+        targets.insert(target_id.to_string(), TargetEntry {
+            url: final_url,
+            html: Some(html_str),
+            title,
+            js_enabled: false,
+        });
+        Ok(())
+    }
+    
+    /// Reload a target using the App API.
+    pub async fn reload(&self, target_id: &str) -> anyhow::Result<()> {
+        let url = {
+            let targets = self.targets.lock().await;
+            targets.get(target_id)
+                .map(|t| t.url.clone())
+                .unwrap_or_else(|| "about:blank".to_string())
+        };
+        
+        self.navigate(target_id, &url).await
+    }
+
+    pub fn update_target_with_data(&self, target_id: &str, url: String, html: String, title: Option<String>) {
         let mut targets = self.targets.blocking_lock();
         targets.insert(target_id.to_string(), TargetEntry {
             url,
-            html: Some(html_str),
+            html: Some(html),
             title,
             js_enabled: false,
         });
     }
 }
 
-/// Per-method result from a domain handler.
 pub enum HandleResult {
-    /// Command succeeded, return this result.
     Success(Value),
-    /// Command failed with this error.
     Error(CdpErrorResponse),
-    /// Domain was enabled/disabled (state change, no result data).
     Ack,
+}
+
+impl HandleResult {
+    pub fn with_request_id(self, id: u64) -> Self {
+        match self {
+            HandleResult::Success(v) => HandleResult::Success(v),
+            HandleResult::Error(err) => HandleResult::Error(CdpErrorResponse {
+                id,
+                ..err
+            }),
+            HandleResult::Ack => HandleResult::Ack,
+        }
+    }
 }
 
 #[async_trait]
 pub trait CdpDomainHandler: Send + Sync {
-    /// The domain name (e.g., "Page", "Runtime", "DOM").
     fn domain_name(&self) -> &'static str;
 
-    /// Handle a command within this domain.
     async fn handle(
         &self,
         method: &str,

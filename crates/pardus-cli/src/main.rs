@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 mod commands;
+mod config;
 
 #[derive(Parser)]
 #[command(name = "pardus-browser")]
@@ -54,6 +55,38 @@ enum Commands {
         /// Capture and display network request table
         #[arg(long)]
         network_log: bool,
+
+        /// Certificate pin (format: "sha256:HASH" or "host=DOMAIN:sha256:HASH")
+        #[arg(long = "cert-pin")]
+        cert_pin: Vec<String>,
+
+        /// Load certificate pins from file (one per line, # comments)
+        #[arg(long = "cert-pin-file")]
+        cert_pin_file: Option<PathBuf>,
+
+        /// Certificate pin match policy: require any or all pins to match
+        #[arg(long = "pin-policy", value_enum)]
+        pin_policy: Option<config::PinPolicyArg>,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy (e.g., "localhost,127.0.0.1")
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long)]
+        no_proxy_env: bool,
     },
 
     /// Interact with a page (click, type, submit, wait, scroll)
@@ -76,6 +109,26 @@ enum Commands {
         /// Wait time for JS execution (ms)
         #[arg(long, default_value = "3000")]
         wait_ms: u32,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long)]
+        no_proxy_env: bool,
     },
 
     /// Start CDP WebSocket server for automation
@@ -91,12 +144,99 @@ enum Commands {
         /// Inactivity timeout in seconds
         #[arg(long, default_value = "30")]
         timeout: u64,
+
+        /// Certificate pin (format: "sha256:HASH" or "host=DOMAIN:sha256:HASH")
+        #[arg(long = "cert-pin")]
+        cert_pin: Vec<String>,
+
+        /// Load certificate pins from file (one per line, # comments)
+        #[arg(long = "cert-pin-file")]
+        cert_pin_file: Option<PathBuf>,
+
+        /// Certificate pin match policy: require any or all pins to match
+        #[arg(long = "pin-policy", value_enum)]
+        pin_policy: Option<config::PinPolicyArg>,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long)]
+        no_proxy_env: bool,
+    },
+
+    /// Start persistent interactive REPL session
+    Repl {
+        /// Enable JavaScript execution by default
+        #[arg(long)]
+        js: bool,
+
+        /// Output format
+        #[arg(short, long, default_value = "md")]
+        format: OutputFormatArg,
+
+        /// Wait time for JS execution (ms)
+        #[arg(long, default_value = "3000")]
+        wait_ms: u32,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long)]
+        no_proxy_env: bool,
     },
 
     /// Tab management commands
     Tab {
         #[command(subcommand)]
         action: TabAction,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long, global = true)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long, global = true)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long, global = true)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy
+        #[arg(long, global = true)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long, global = true)]
+        no_proxy_env: bool,
     },
 
     /// Wipe all cache, cookies, and storage
@@ -113,20 +253,92 @@ enum Commands {
         #[arg(long)]
         cache_only: bool,
     },
+
+    /// Map a site's functional structure into a Knowledge Graph
+    Map {
+        /// Root URL to start mapping from
+        url: String,
+
+        /// Output file path (JSON)
+        #[arg(short, long, default_value = "kg.json")]
+        output: PathBuf,
+
+        /// Maximum crawl depth
+        #[arg(short, long, default_value = "3")]
+        depth: usize,
+
+        /// Maximum pages to visit
+        #[arg(long, default_value = "50")]
+        max_pages: usize,
+
+        /// Delay between requests (ms)
+        #[arg(long, default_value = "200")]
+        delay: u64,
+
+        /// Skip transition verification
+        #[arg(long)]
+        skip_verify: bool,
+
+        /// Discover pagination transitions
+        #[arg(long, default_value = "true")]
+        pagination: bool,
+
+        /// Discover hash navigation
+        #[arg(long, default_value = "true")]
+        hash_nav: bool,
+
+        /// Verbose logging
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Proxy URL for all traffic (HTTP, HTTPS, or SOCKS5)
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Proxy URL for HTTP traffic (overrides --proxy for HTTP)
+        #[arg(long)]
+        proxy_http: Option<String>,
+
+        /// Proxy URL for HTTPS traffic (overrides --proxy for HTTPS)
+        #[arg(long)]
+        proxy_https: Option<String>,
+
+        /// Comma-separated list of hosts to bypass proxy
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable automatic loading of proxy settings from environment variables
+        #[arg(long)]
+        no_proxy_env: bool,
+    },
 }
 
 #[derive(Clone, Subcommand)]
 pub enum InteractAction {
-    /// Click on an element
+    /// Click on an element using CSS selector
     Click {
         /// CSS selector of the element to click
         selector: String,
+    },
+
+    /// Click on an element using its element ID (e.g., 1, 2, 3)
+    ClickId {
+        /// Element ID shown in the semantic tree (e.g., 1, 2, 3)
+        id: usize,
     },
 
     /// Type text into a field
     Type {
         /// CSS selector of the field
         selector: String,
+        /// Value to type
+        value: String,
+    },
+
+    /// Type text into a field using its element ID
+    TypeId {
+        /// Element ID shown in the semantic tree
+        id: usize,
         /// Value to type
         value: String,
     },
@@ -157,11 +369,12 @@ pub enum InteractAction {
     },
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Debug, ValueEnum)]
 pub enum OutputFormatArg {
     Md,
     Tree,
     Json,
+    Llm,
 }
 
 #[derive(Clone, Subcommand)]
@@ -201,6 +414,14 @@ async fn main() -> Result<()> {
             js,
             verbose,
             network_log,
+            cert_pin,
+            cert_pin_file,
+            pin_policy,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
         } => {
             if verbose {
                 tracing_subscriber::fmt()
@@ -208,7 +429,50 @@ async fn main() -> Result<()> {
                     .init();
             }
 
-            commands::navigate::run(&url, format, interactive_only, with_nav, js, wait_ms, network_log).await?;
+            let mut browser_config = pardus_core::BrowserConfig::default();
+
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+            browser_config.proxy = proxy_config;
+
+            if !cert_pin.is_empty() || cert_pin_file.is_some() {
+                let mut all_pins = cert_pin.clone();
+                if let Some(path) = &cert_pin_file {
+                    match config::load_pins_from_file(path) {
+                        Ok(file_pins) => all_pins.extend(file_pins),
+                        Err(e) => {
+                            eprintln!("Warning: failed to load cert pin file: {}", e);
+                        }
+                    }
+                }
+                match config::build_cert_pinning_config(&all_pins, pin_policy, true) {
+                    Ok(pin_config) => {
+                        browser_config.cert_pinning = Some(pin_config);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: invalid certificate pin config: {}", e);
+                    }
+                }
+            }
+
+            commands::navigate::run_with_config(&url, format, interactive_only, with_nav, js, wait_ms, network_log, browser_config,
+            ).await?;
         }
         Commands::Interact {
             url,
@@ -216,12 +480,83 @@ async fn main() -> Result<()> {
             format,
             js,
             wait_ms,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
         } => {
-            commands::interact::run(&url, action, format, js, wait_ms).await?;
+            let mut browser_config = pardus_core::BrowserConfig::default();
+
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+            browser_config.proxy = proxy_config;
+
+            commands::interact::run_with_config(&url, action, format, js, wait_ms, browser_config,
+            ).await?;
         }
-        Commands::Serve { host, port, timeout } => {
+        Commands::Serve { host, port, timeout, cert_pin, cert_pin_file, pin_policy, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
             tracing::info!("Starting CDP WebSocket server on ws://{host}:{port}");
-            commands::serve::run(&host, port, timeout).await?;
+
+            let mut browser_config = pardus_core::BrowserConfig::default();
+
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+            browser_config.proxy = proxy_config;
+
+            if !cert_pin.is_empty() || cert_pin_file.is_some() {
+                let mut all_pins = cert_pin;
+                if let Some(path) = &cert_pin_file {
+                    match config::load_pins_from_file(path) {
+                        Ok(file_pins) => all_pins.extend(file_pins),
+                        Err(e) => {
+                            eprintln!("Warning: failed to load cert pin file: {}", e);
+                        }
+                    }
+                }
+                match config::build_cert_pinning_config(&all_pins, pin_policy, true) {
+                    Ok(pin_config) => {
+                        browser_config.cert_pinning = Some(pin_config);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: invalid certificate pin config: {}", e);
+                    }
+                }
+            }
+
+            commands::serve::run(&host, port, timeout, browser_config).await?;
         }
         Commands::Clean {
             cache_dir,
@@ -230,23 +565,109 @@ async fn main() -> Result<()> {
         } => {
             commands::clean::run(cache_dir, cookies_only, cache_only)?;
         }
-        Commands::Tab { action } => {
+        Commands::Tab { action, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+
             match action {
                 TabAction::List => {
-                    let browser = pardus_core::Browser::new(pardus_core::BrowserConfig::default());
+                    let mut browser_config = pardus_core::BrowserConfig::default();
+                    browser_config.proxy = proxy_config;
+                    let browser = pardus_core::Browser::new(browser_config);
                     commands::tab::list(&browser, OutputFormatArg::Md).await?;
                 }
                 TabAction::Open { url, js } => {
-                    commands::tab::open(&url, js).await?;
+                    commands::tab::open_with_config(&url, js, proxy_config,
+                    ).await?;
                 }
                 TabAction::Info => {
-                    let browser = pardus_core::Browser::new(pardus_core::BrowserConfig::default());
+                    let mut browser_config = pardus_core::BrowserConfig::default();
+                    browser_config.proxy = proxy_config;
+                    let browser = pardus_core::Browser::new(browser_config);
                     commands::tab::info(&browser, OutputFormatArg::Md)?;
                 }
                 TabAction::Navigate { url } => {
-                    commands::tab::navigate(&url).await?;
+                    commands::tab::navigate_with_config(&url, proxy_config,
+                    ).await?;
                 }
             }
+        }
+        Commands::Repl { js, format, wait_ms, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+
+            commands::repl::run_with_config(js, format, wait_ms, proxy_config).await?;
+        }
+        Commands::Map {
+            url,
+            output,
+            depth,
+            max_pages,
+            delay,
+            skip_verify,
+            pagination,
+            hash_nav,
+            verbose,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
+        } => {
+            // Build proxy configuration
+            let mut proxy_config = pardus_core::ProxyConfig::new();
+            if let Some(all_proxy) = proxy {
+                proxy_config = proxy_config.with_all_proxy(all_proxy);
+            }
+            if let Some(http) = proxy_http {
+                proxy_config = proxy_config.with_http_proxy(http);
+            }
+            if let Some(https) = proxy_https {
+                proxy_config = proxy_config.with_https_proxy(https);
+            }
+            if let Some(no) = no_proxy {
+                proxy_config = proxy_config.with_no_proxy(no);
+            }
+            // Merge environment variables unless disabled
+            if !no_proxy_env {
+                proxy_config = proxy_config.merge_env();
+            }
+
+            commands::map::run_with_config(
+                &url, &output, depth, max_pages, delay, skip_verify, pagination, hash_nav, verbose, proxy_config,
+            ).await?;
         }
     }
 

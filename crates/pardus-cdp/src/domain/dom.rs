@@ -38,8 +38,9 @@ impl CdpDomainHandler for DomDomain {
                 HandleResult::Ack
             }
             "getDocument" => {
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
                 let mut nm = ctx.node_map.lock().await;
-                let doc = match (ctx.get_html(target_id), ctx.get_url(target_id)) {
+                let doc = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         build_document_tree(&page, &mut nm)
@@ -58,7 +59,7 @@ impl CdpDomainHandler for DomDomain {
                 };
 
                 if let Some(selector) = selector {
-                    if let (Some(html_str), Some(url)) = (ctx.get_html(target_id), ctx.get_url(target_id)) {
+                    if let (Some(html_str), Some(url)) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await) {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         if let Some(el) = page.query(&selector) {
                             return HandleResult::Success(serde_json::json!({
@@ -97,7 +98,8 @@ impl CdpDomainHandler for DomDomain {
                 }
 
                 let mut nm = ctx.node_map.lock().await;
-                let has_sel = match (ctx.get_html(target_id), ctx.get_url(target_id)) {
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
+                let has_sel = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         page.has_selector(selector)
@@ -117,13 +119,15 @@ impl CdpDomainHandler for DomDomain {
             }
             "querySelectorAll" => {
                 let selector = params["selector"].as_str().unwrap_or("");
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
                 let mut nm = ctx.node_map.lock().await;
 
-                let node_ids: Vec<i64> = match (ctx.get_html(target_id), ctx.get_url(target_id)) {
+                let node_ids: Vec<i64> = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
-                        page.query_all(selector).iter().map(|_| {
-                            nm.get_or_assign(selector)
+                        page.query_all(selector).iter().enumerate().map(|(i, _)| {
+                            let unique_key = format!("{}[{}]", selector, i);
+                            nm.get_or_assign(&unique_key)
                         }).collect()
                     }
                     _ => vec![],
@@ -141,24 +145,96 @@ impl CdpDomainHandler for DomDomain {
                     nm.get_selector(node_id).map(|s| s.to_string())
                 };
 
-                let html = match (selector, ctx.get_html(target_id), ctx.get_url(target_id)) {
+                let html = match (selector, ctx.get_html(target_id).await, ctx.get_url(target_id).await) {
                     (Some(sel), Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         let elements = page.query_all(&sel);
                         if !elements.is_empty() {
-                            format!("<{}>...</{}>", elements[0].tag, elements[0].tag)
+                            extract_outer_html(&html_str, &elements[0].selector)
                         } else {
                             String::new()
                         }
                     }
-                    (_, Some(html_str), _) => html_str,
+                    (None, _, _) => {
+                        return HandleResult::Error(CdpErrorResponse {
+                            id: 0,
+                            error: crate::error::CdpErrorBody {
+                                code: INVALID_PARAMS,
+                                message: "No node specified".to_string(),
+                            },
+                            session_id: None,
+                        });
+                    }
                     _ => String::new(),
                 };
                 HandleResult::Success(serde_json::json!({
                     "outerHTML": html
                 }))
             }
+            "getInnerHTML" => {
+                let node_id = params["backendNodeId"].as_i64()
+                    .or(params["nodeId"].as_i64())
+                    .unwrap_or(-1);
+                let selector = {
+                    let nm = ctx.node_map.lock().await;
+                    nm.get_selector(node_id).map(|s| s.to_string())
+                };
+
+                let inner_html = match (selector, ctx.get_html(target_id).await) {
+                    (Some(sel), Some(html_str)) => {
+                        extract_inner_html(&html_str, &sel)
+                    }
+                    _ => String::new(),
+                };
+                HandleResult::Success(serde_json::json!({
+                    "innerHTML": inner_html
+                }))
+            }
+            "setAttributeValue" => {
+                let node_id = params["nodeId"].as_i64().unwrap_or(-1);
+                let attr_name = params["name"].as_str().unwrap_or("");
+                let attr_value = params["value"].as_str().unwrap_or("");
+                let selector = {
+                    let nm = ctx.node_map.lock().await;
+                    nm.get_selector(node_id).map(|s| s.to_string())
+                };
+
+                if let Some(_sel) = selector {
+                    let _ = (attr_name, attr_value);
+                }
+
+                HandleResult::Ack
+            }
+            "removeAttribute" => HandleResult::Ack,
             "removeNode" => HandleResult::Ack,
+            "setNodeValue" => HandleResult::Ack,
+            "setNodeName" => HandleResult::Ack,
+            "getBoxModel" => {
+                HandleResult::Success(serde_json::json!({
+                    "model": {
+                        "content": [0, 0, 0, 0],
+                        "padding": [0, 0, 0, 0],
+                        "border": [0, 0, 0, 0],
+                        "margin": [0, 0, 0, 0],
+                        "width": 1280,
+                        "height": 0,
+                    }
+                }))
+            }
+            "getNodeForLocation" => {
+                let _x = params["x"].as_f64().unwrap_or(0.0);
+                let _y = params["y"].as_f64().unwrap_or(0.0);
+                let mut nm = ctx.node_map.lock().await;
+                let backend_id = nm.get_or_assign("body");
+                HandleResult::Success(serde_json::json!({
+                    "backendNodeId": backend_id,
+                    "nodeId": backend_id,
+                    "frameId": resolve_target_id(session),
+                }))
+            }
+            "highlightNode" => HandleResult::Ack,
+            "hideHighlight" => HandleResult::Ack,
+            "highlightRect" => HandleResult::Ack,
             "pushNodesByBackendIdsToFrontend" => {
                 let ids = params["backendNodeIds"].as_array()
                     .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<_>>())
@@ -168,8 +244,108 @@ impl CdpDomainHandler for DomDomain {
                 }).collect();
                 HandleResult::Success(serde_json::json!({ "nodes": nodes }))
             }
+            "resolveNode" => {
+                let _object_id = params["objectId"].as_str().unwrap_or("");
+                let mut nm = ctx.node_map.lock().await;
+                let body_id = nm.get_or_assign("body");
+                HandleResult::Success(serde_json::json!({
+                    "object": {
+                        "type": "object",
+                        "subtype": "node",
+                        "className": "HTMLBodyElement",
+                        "description": "body",
+                    },
+                    "backendNodeId": body_id,
+                }))
+            }
+            "requestNode" => {
+                let _object_id = params["objectId"].as_str().unwrap_or("");
+                let mut nm = ctx.node_map.lock().await;
+                let body_id = nm.get_or_assign("body");
+                HandleResult::Success(serde_json::json!({ "nodeId": body_id }))
+            }
+            "setFileInputFiles" => HandleResult::Ack,
+            "getFileInfo" => {
+                HandleResult::Error(CdpErrorResponse {
+                    id: 0,
+                    error: crate::error::CdpErrorBody {
+                        code: SERVER_ERROR,
+                        message: "getFileInfo not supported".to_string(),
+                    },
+                    session_id: None,
+                })
+            }
+            "performSearch" => {
+                let _query = params["query"].as_str().unwrap_or("");
+                HandleResult::Success(serde_json::json!({
+                    "resultCount": 0,
+                    "searchId": format!("search-{}", uuid::Uuid::new_v4()),
+                }))
+            }
+            "getSearchResults" => {
+                let _search_id = params["searchId"].as_str().unwrap_or("");
+                let from_index = params["fromIndex"].as_u64().unwrap_or(0);
+                let _to_index = params["toIndex"].as_u64().unwrap_or(from_index);
+                HandleResult::Success(serde_json::json!({
+                    "nodeIds": [],
+                }))
+            }
+            "discardSearchResults" => HandleResult::Ack,
+            "requestChildNodes" => HandleResult::Ack,
+            "collectClassNamesFromSubtree" => {
+                let _node_id = params["nodeId"].as_i64().unwrap_or(-1);
+                HandleResult::Success(serde_json::json!({
+                    "classNames": []
+                }))
+            }
+            "copyTo" => HandleResult::Ack,
+            "moveTo" => HandleResult::Ack,
+            "undo" => HandleResult::Ack,
+            "redo" => HandleResult::Ack,
+            "markUndoableState" => HandleResult::Ack,
+            "focus" => HandleResult::Ack,
+            "getFlattenedDocument" => {
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
+                let mut nm = ctx.node_map.lock().await;
+                let doc = match (html_str, url) {
+                    (Some(html_str), Some(url)) => {
+                        let page = pardus_core::Page::from_html(&html_str, &url);
+                        build_document_tree(&page, &mut nm)
+                    }
+                    _ => empty_document(&mut nm),
+                };
+                HandleResult::Success(doc)
+            }
+            "getEmbeddedCSS" => HandleResult::Success(serde_json::json!({
+                "embeddedCSS": []
+            })),
+            "getTopLayer" => HandleResult::Success(serde_json::json!({ "topLayerNodes": [] })),
             _ => method_not_found("DOM", method),
         }
+    }
+}
+
+fn extract_outer_html(html: &str, selector: &str) -> String {
+    let doc = scraper::Html::parse_document(html);
+    let sel = match scraper::Selector::parse(selector) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    match doc.select(&sel).next() {
+        Some(el) => el.html(),
+        None => String::new(),
+    }
+}
+
+fn extract_inner_html(html: &str, selector: &str) -> String {
+    let doc = scraper::Html::parse_document(html);
+    let sel = match scraper::Selector::parse(selector) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    match doc.select(&sel).next() {
+        Some(el) => el.inner_html(),
+        None => String::new(),
     }
 }
 
@@ -195,6 +371,10 @@ fn build_document_tree(page: &pardus_core::Page, node_map: &mut NodeMap) -> Valu
             attrs.push(Value::String("name".to_string()));
             attrs.push(Value::String(name.clone()));
         }
+        if let Some(ref action) = el.action {
+            attrs.push(Value::String("data-action".to_string()));
+            attrs.push(Value::String(action.clone()));
+        }
         serde_json::json!({
             "nodeId": el_id,
             "backendNodeId": el_id,
@@ -206,7 +386,6 @@ fn build_document_tree(page: &pardus_core::Page, node_map: &mut NodeMap) -> Valu
         })
     }).collect();
 
-    let html_id = node_map.get_or_assign("html");
     let title_id = node_map.get_or_assign("title");
 
     serde_json::json!({
@@ -218,8 +397,8 @@ fn build_document_tree(page: &pardus_core::Page, node_map: &mut NodeMap) -> Valu
             "localName": "",
             "childNodeCount": 1,
             "children": [{
-                "nodeId": html_id,
-                "backendNodeId": html_id,
+                "nodeId": doc_id,
+                "backendNodeId": doc_id,
                 "nodeType": 1,
                 "nodeName": "HTML",
                 "localName": "html",

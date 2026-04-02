@@ -85,6 +85,17 @@ impl LazyDom {
         }
     }
 
+    /// Create from bytes (infallible, parses lazily)
+    pub fn from_bytes(bytes: Bytes) -> Self {
+        let html_str = std::str::from_utf8(&bytes).unwrap_or("");
+        let element_count = html_str.matches('<').count();
+        Self {
+            source: bytes,
+            full_dom: OnceLock::new(),
+            element_count,
+        }
+    }
+
     /// Parse from bytes
     pub fn parse_bytes(bytes: &Bytes) -> anyhow::Result<Self> {
         let html_str = std::str::from_utf8(bytes)?;
@@ -131,7 +142,7 @@ impl LazyDom {
     }
 
     /// Query with CSS selector (triggers full parse)
-    pub fn select(&self, selector: &str) -> Option<ElementRef> {
+    pub fn select(&self, selector: &str) -> Option<ElementRef<'_>> {
         let html = self.full_dom();
         Selector::parse(selector)
             .ok()
@@ -187,8 +198,14 @@ impl LazyDom {
     }
 }
 
+impl Default for LazyDom {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Trait for lazy parseable types
-pub trait LazyParse: Send + Sync {
+pub trait LazyParse {
     /// Type when fully parsed
     type Parsed;
 
@@ -214,6 +231,7 @@ impl LazyParse for LazyDom {
 /// Incremental parser for partial document parsing
 pub struct IncrementalParser {
     chunks: Vec<Bytes>,
+    #[allow(dead_code)]
     position: usize,
 }
 

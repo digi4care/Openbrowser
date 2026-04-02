@@ -12,6 +12,7 @@ pub enum ResourceType {
     Media,
     Fetch,
     Xhr,
+    WebSocket,
     Other,
 }
 
@@ -58,6 +59,9 @@ pub struct NetworkRecord {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_cache: Option<bool>,
 }
 
 impl NetworkRecord {
@@ -85,6 +89,7 @@ impl NetworkRecord {
             request_headers: Vec::new(),
             response_headers: Vec::new(),
             error: None,
+            from_cache: None,
         }
     }
 
@@ -111,6 +116,7 @@ impl NetworkRecord {
             request_headers: Vec::new(),
             response_headers: Vec::new(),
             error: None,
+            from_cache: None,
         }
     }
 }
@@ -168,6 +174,7 @@ impl fmt::Display for ResourceType {
             Self::Media => write!(f, "media"),
             Self::Fetch => write!(f, "fetch"),
             Self::Xhr => write!(f, "xhr"),
+            Self::WebSocket => write!(f, "websocket"),
             Self::Other => write!(f, "other"),
         }
     }

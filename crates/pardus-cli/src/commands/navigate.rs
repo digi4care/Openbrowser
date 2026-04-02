@@ -2,8 +2,9 @@ use anyhow::Result;
 use std::time::Instant;
 
 use crate::OutputFormatArg;
+use pardus_core::BrowserConfig;
 
-pub async fn run(
+pub async fn run_with_config(
     url: &str,
     format: OutputFormatArg,
     interactive_only: bool,
@@ -11,6 +12,7 @@ pub async fn run(
     js: bool,
     wait_ms: u32,
     network_log: bool,
+    config: BrowserConfig,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -19,7 +21,7 @@ pub async fn run(
         0, 0, url
     );
 
-    let mut browser = pardus_core::Browser::new(pardus_core::BrowserConfig::default());
+    let mut browser = pardus_core::Browser::new(config);
 
     if js {
         println!("       JS execution enabled — executing scripts…");
@@ -39,7 +41,7 @@ pub async fn run(
     let net_log = browser.network_log.clone();
     let http_client = browser.http_client.clone();
 
-    let page = browser.current_page().unwrap();
+    let page = browser.current_page().ok_or_else(|| anyhow::anyhow!("no page loaded"))?;
 
     if network_log {
         page.discover_subresources(&net_log);
@@ -74,6 +76,11 @@ pub async fn run(
                 }
             }
         }
+        OutputFormatArg::Llm => {
+            let output = pardus_core::output::llm_formatter::format_llm(&tree);
+            println!("{}", output);
+            return Ok(());
+        }
         OutputFormatArg::Json => {
             let nav_graph = if with_nav {
                 Some(page.navigation_graph())
@@ -82,7 +89,7 @@ pub async fn run(
             };
 
             let network = if network_log {
-                let log = net_log.lock().unwrap();
+                let log = net_log.lock().unwrap_or_else(|e| e.into_inner());
                 Some(pardus_debug::formatter::NetworkLogJson::from_log(&log))
             } else {
                 None
@@ -186,6 +193,9 @@ fn filter_interactive(tree: &pardus_core::SemanticTree) -> pardus_core::Semantic
         is_disabled: false,
         href: None,
         action: None,
+        element_id: None,
+        selector: None,
+        input_type: None,
         children: vec![],
     });
 
