@@ -168,7 +168,7 @@ async fn handle_interact(
                     let page = pardus_core::Page::from_html(&html_str, &url);
                     match page.query(selector) {
                         Some(handle) => {
-                            match pardus_core::App::type_text(&page, &handle, value) {
+                            match pardus_core::interact::actions::type_text(&page, &handle, value) {
                                 Ok(_) => serde_json::json!({ "success": true, "action": "type", "selector": selector }),
                                 Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
                             }

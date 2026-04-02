@@ -88,6 +88,16 @@ impl Default for TabConfig {
 }
 
 impl Tab {
+    fn push_history(&mut self, url: &str) {
+        if self.history_index < self.history.len() - 1 {
+            self.history.truncate(self.history_index + 1);
+        }
+        if self.history.last() != Some(&url.to_string()) {
+            self.history.push(url.to_string());
+            self.history_index = self.history.len() - 1;
+        }
+    }
+
     /// Create a new tab with the given URL
     ///
     /// The tab is created in Loading state. Call `load()` to fetch the page.
@@ -136,13 +146,8 @@ impl Tab {
             Ok(page) => {
                 self.title = page.title();
                 self.url = page.url.clone();
-                if self.history_index < self.history.len() - 1 {
-                    self.history.truncate(self.history_index + 1);
-                }
-                if self.history.last() != Some(&self.url) {
-                    self.history.push(self.url.clone());
-                    self.history_index = self.history.len() - 1;
-                }
+                let url_clone = self.url.clone();
+                self.push_history(&url_clone);
                 self.state = TabState::Ready;
                 self.page = Some(page);
                 Ok(self.page.as_ref().unwrap())
@@ -200,8 +205,8 @@ impl Tab {
     /// Load the page using a raw reqwest client.
     pub async fn load_with_client(
         &mut self,
-        client: &reqwest::Client,
-        network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
+        _client: &reqwest::Client,
+        _network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
         config: &BrowserConfig,
         js_enabled: bool,
         wait_ms: u32,
@@ -221,13 +226,8 @@ impl Tab {
             Ok(page) => {
                 self.title = page.title();
                 self.url = page.url.clone();
-                if self.history_index < self.history.len() - 1 {
-                    self.history.truncate(self.history_index + 1);
-                }
-                if self.history.last() != Some(&self.url) {
-                    self.history.push(self.url.clone());
-                    self.history_index = self.history.len() - 1;
-                }
+                let url_clone = self.url.clone();
+                self.push_history(&url_clone);
                 self.state = TabState::Ready;
                 self.page = Some(page);
                 Ok(self.page.as_ref().unwrap())
@@ -271,13 +271,8 @@ impl Tab {
     pub fn update_page(&mut self, page: Page) {
         self.title = page.title();
         self.url = page.url.clone();
-        if self.history_index < self.history.len() - 1 {
-            self.history.truncate(self.history_index + 1);
-        }
-        if self.history.last() != Some(&self.url) {
-            self.history.push(self.url.clone());
-            self.history_index = self.history.len() - 1;
-        }
+        let url_clone = self.url.clone();
+        self.push_history(&url_clone);
         self.state = TabState::Ready;
         self.page = Some(page);
     }
@@ -344,6 +339,12 @@ impl Tab {
     /// Get all interactive elements from the current page.
     pub fn interactive_elements(&self) -> Vec<ElementHandle> {
         self.page.as_ref().map(|p| p.interactive_elements()).unwrap_or_default()
+    }
+
+    /// Find an interactive element by its element ID (e.g., 1, 2, 3).
+    /// This is the preferred way for AI agents to reference elements.
+    pub fn find_by_element_id(&self, id: usize) -> Option<ElementHandle> {
+        self.page.as_ref().and_then(|p| p.find_by_element_id(id))
     }
 
     // -------------------------------------------------------------------

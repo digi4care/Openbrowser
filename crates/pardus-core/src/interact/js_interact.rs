@@ -86,20 +86,24 @@ fn execute_interaction_inner(
     let bootstrap = include_str!("../js/bootstrap.js");
     runtime.execute_script("bootstrap.js", bootstrap)?;
 
-    // Set up location and user agent after bootstrap
+    // Set up location and user agent after bootstrap.
+    // We set individual properties on the existing Proxy to preserve the
+    // navigation-detection setter. After populating the values, we clear the
+    // navigation-href attribute so that only the *actual* interaction sets it.
     let location_js = format!(
         r#"
-        window.location = {{
-            href: "{}",
-            origin: "{}",
-            protocol: "{}",
-            host: "{}",
-            hostname: "{}",
-            pathname: "{}",
-            search: "{}",
-            hash: "{}"
-        }};
+        window.location.href = "{}";
+        window.location.origin = "{}";
+        window.location.protocol = "{}";
+        window.location.host = "{}";
+        window.location.hostname = "{}";
+        window.location.pathname = "{}";
+        window.location.search = "{}";
+        window.location.hash = "{}";
         globalThis.__pardusUserAgent = "{}";
+        // Clear navigation marker set during location initialization
+        var _docEl = document.documentElement;
+        if (_docEl) _docEl.removeAttribute("data-pardus-navigation-href");
     "#,
         base.as_str(),
         base.origin().ascii_serialization(),
@@ -181,11 +185,11 @@ fn execute_interaction_thread(
 
         match res {
             Ok(Ok(output)) => {
-                *result_clone.lock().unwrap() = output;
+                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = output;
             }
             Ok(Err(e)) => {
                 eprintln!("[js_interact] Error: {:#}", e);
-                *result_clone.lock().unwrap() = InteractionThreadResult {
+                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = InteractionThreadResult {
                     html: None,
                     click_prevented: false,
                     href: None,
@@ -195,7 +199,7 @@ fn execute_interaction_thread(
             }
             Err(panic_val) => {
                 eprintln!("[js_interact] Thread panicked: {:?}", panic_val);
-                *result_clone.lock().unwrap() = InteractionThreadResult {
+                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = InteractionThreadResult {
                     html: None,
                     click_prevented: false,
                     href: None,
@@ -217,7 +221,7 @@ fn execute_interaction_thread(
         thread::sleep(Duration::from_millis(10));
     }
 
-    let guard = result.lock().unwrap();
+    let guard = result.lock().unwrap_or_else(|e| e.into_inner());
     let ret = InteractionThreadResult {
         html: guard.html.clone(),
         click_prevented: guard.click_prevented,

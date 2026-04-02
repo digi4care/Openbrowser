@@ -3,14 +3,11 @@
 //! Provides efficient parsing for large documents with minimal memory overhead.
 
 use bytes::Bytes;
-use lol_html::{HtmlRewriter, RewriteStrSettings, OutputSink, ElementContentHandlers};
-use lol_html::errors::RewritingError;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{trace, instrument};
 
 use super::LazyDom;
-use super::preload_scanner::{PreloadScanner, ResourceHint, Priority};
+use super::preload_scanner::{PreloadScanner, ResourceHint};
 
 /// Parser configuration options
 #[derive(Debug, Clone)]
@@ -79,39 +76,18 @@ impl StreamingParser {
 
     /// Parse using streaming mode - minimal memory footprint
     #[instrument(skip(self, html), level = "trace")]
-    pub fn parse_streaming(&mut self,
-        html: Bytes,
-        url: &str,
-    ) -> ParseResult {
+    pub fn parse_streaming(&mut self, html: Bytes, _url: &str) -> ParseResult {
         let start = std::time::Instant::now();
-        trace!("starting streaming parse, {} bytes", html.len());
+        let bytes_len = html.len();
+        trace!("starting streaming parse, {} bytes", bytes_len);
 
-        let mut hints = Vec::new();
-        let mut element_count = 0usize;
-        let mut text_count = 0usize;
-
-        // Build rewriter with handlers for resource extraction
-        let mut rewriter = self.build_rewriter(|hint| {
-            hints.push(hint);
-        }, |count| {
-            element_count += count;
-        }, |count| {
-            text_count += count;
-        });
-
-        // Process chunks
-        let chunk_size = 16 * 1024; // 16KB chunks
-        for chunk in html.chunks(chunk_size) {
-            if let Err(e) = rewriter.write(chunk) {
-                tracing::warn!("rewriter error: {}", e);
-            }
-        }
-
-        // Finalize
-        let _ = rewriter.end();
-
-        let elapsed = start.elapsed();
-        trace!("streaming parse complete in {:?}", elapsed);
+        // Extract hints via scanner
+        let hints = if self.options.extract_hints {
+            self.scanner.scan(&html)
+        } else {
+            Vec::new()
+        };
+        let hints_len = hints.len();
 
         // Build lazy DOM from source
         let dom = if self.options.keep_source {
@@ -119,15 +95,19 @@ impl StreamingParser {
         } else {
             Arc::new(LazyDom::empty())
         };
+        let element_count = dom.element_count();
+
+        let elapsed = start.elapsed();
+        trace!("streaming parse complete in {:?}", elapsed);
 
         ParseResult {
             dom,
             hints,
             stats: ParseStats {
-                bytes_processed: html.len(),
+                bytes_processed: bytes_len,
                 elements_seen: element_count,
-                text_chunks: text_count,
-                hints_extracted: hints.len(),
+                text_chunks: 0,
+                hints_extracted: hints_len,
                 time_micros: elapsed.as_micros() as u64,
             },
             used_streaming: true,
@@ -136,16 +116,10 @@ impl StreamingParser {
 
     /// Parse full document - build complete DOM
     #[instrument(skip(self, html), level = "trace")]
-    pub fn parse_full(
-        &mut self,
-        html: Bytes,
-        _url: &str,
-    ) -> ParseResult {
+    pub fn parse_full(&mut self, html: Bytes, _url: &str) -> ParseResult {
         let start = std::time::Instant::now();
-        trace!("starting full parse, {} bytes", html.len());
-
-        // Use scraper/html5ever for full DOM
-        let dom = Arc::new(LazyDom::parse_bytes(&html).unwrap_or_default());
+        let bytes_len = html.len();
+        trace!("starting full parse, {} bytes", bytes_len);
 
         // Extract hints via scanner
         let hints = if self.options.extract_hints {
@@ -153,6 +127,11 @@ impl StreamingParser {
         } else {
             Vec::new()
         };
+        let hints_len = hints.len();
+
+        // Use scraper/html5ever for full DOM
+        let dom = Arc::new(LazyDom::parse_bytes(&html).unwrap_or_default());
+        let element_count = dom.element_count();
 
         let elapsed = start.elapsed();
         trace!("full parse complete in {:?}", elapsed);
@@ -161,35 +140,14 @@ impl StreamingParser {
             dom,
             hints,
             stats: ParseStats {
-                bytes_processed: html.len(),
-                elements_seen: dom.element_count(),
+                bytes_processed: bytes_len,
+                elements_seen: element_count,
                 text_chunks: 0,
-                hints_extracted: hints.len(),
+                hints_extracted: hints_len,
                 time_micros: elapsed.as_micros() as u64,
             },
             used_streaming: false,
         }
-    }
-
-    fn build_rewriter(
-        &self,
-        hint_callback: impl FnMut(ResourceHint),
-        _element_callback: impl FnMut(usize),
-        _text_callback: impl FnMut(usize),
-    ) -> HtmlRewriter<'static, OutputSink> {
-        let settings = RewriteStrSettings {
-            element_content_handlers: vec![
-                // Handle link tags (CSS preload)
-                ("link[rel=stylesheet]", ElementContentHandlers::default()),
-                // Handle script tags
-                ("script[src]", ElementContentHandlers::default()),
-                // Handle images
-                ("img[src]", ElementContentHandlers::default()),
-            ],
-            ..RewriteStrSettings::default()
-        };
-
-        HtmlRewriter::new(settings, |_chunk| {}).unwrap()
     }
 }
 

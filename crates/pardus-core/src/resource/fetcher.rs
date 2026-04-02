@@ -6,7 +6,7 @@ use crate::push::PushCache;
 use bytes::Bytes;
 use reqwest::header::HeaderMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::{trace, instrument};
 
 /// Fetch options
@@ -88,6 +88,7 @@ impl FetchResult {
 /// High-performance resource fetcher
 pub struct ResourceFetcher {
     client: reqwest::Client,
+    #[allow(dead_code)]
     config: ResourceConfig,
 }
 
@@ -126,13 +127,12 @@ impl ResourceFetcher {
         }
     }
 
-    pub async fn fetch_with_options(&self, url: &str, options: FetchOptions) -> FetchResult {
+    pub async fn fetch_with_options(&self, url: &str, _options: FetchOptions) -> FetchResult {
         let start = std::time::Instant::now();
 
-        let mut request = self.client.get(url);
-        if !options.follow_redirects {
-            request = request.redirect(reqwest::redirect::Policy::none());
-        }
+        // Note: redirect policy is configured on the client, not per-request
+        // For no-redirect, would need a separate client
+        let request = self.client.get(url);
 
         match request.send().await {
             Ok(response) => {
@@ -151,10 +151,10 @@ impl ResourceFetcher {
                         result.response_headers = headers;
                         result
                     }
-                    Err(e) => FetchResult::error(url, e),
+                    Err(e) => FetchResult::error(url, e.to_string()),
                 }
             }
-            Err(e) => FetchResult::error(url, e),
+            Err(e) => FetchResult::error(url, e.to_string()),
         }
     }
 
@@ -180,7 +180,7 @@ impl ResourceFetcher {
 
                 if status == 304 {
                     let elapsed = start.elapsed();
-                    let mut result = FetchResult {
+                    let result = FetchResult {
                         url: url.to_string(),
                         status,
                         body: None,
@@ -201,10 +201,10 @@ impl ResourceFetcher {
                         result.response_headers = headers;
                         result
                     }
-                    Err(e) => FetchResult::error(url, e),
+                    Err(e) => FetchResult::error(url, e.to_string()),
                 }
             }
-            Err(e) => FetchResult::error(url, e),
+            Err(e) => FetchResult::error(url, e.to_string()),
         }
     }
 

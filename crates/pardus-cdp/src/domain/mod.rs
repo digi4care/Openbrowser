@@ -56,7 +56,7 @@ impl DomainContext {
     pub async fn navigate(&self, target_id: &str, url: &str) -> anyhow::Result<()> {
         let (final_url, html_str, title) = {
             let page = pardus_core::Page::from_url(&self.app, url).await?;
-            (page.url, page.html.html().to_string(), page.title())
+            (page.url.clone(), page.html.html().to_string(), page.title())
         };
         let mut targets = self.targets.lock().await;
         targets.insert(target_id.to_string(), TargetEntry {

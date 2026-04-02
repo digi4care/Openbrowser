@@ -184,6 +184,8 @@ impl InterceptorManager {
 
         let mut combined = ModifiedRequest::default();
         let mut had_modifications = false;
+        let mut pending_redirect: Option<String> = None;
+        let mut pending_mock: Option<MockResponse> = None;
 
         for interceptor in interceptors.iter() {
             if interceptor.phase() != InterceptorPhase::BeforeRequest {
@@ -194,8 +196,12 @@ impl InterceptorManager {
             }
             match interceptor.intercept_request(ctx).await {
                 InterceptAction::Block => return InterceptAction::Block,
-                InterceptAction::Redirect(url) => return InterceptAction::Redirect(url),
-                InterceptAction::Mock(mock) => return InterceptAction::Mock(mock),
+                InterceptAction::Redirect(url) => {
+                    pending_redirect = Some(url);
+                }
+                InterceptAction::Mock(mock) => {
+                    pending_mock = Some(mock);
+                }
                 InterceptAction::Modify(mods) => {
                     if let Some(url) = mods.url {
                         combined.url = Some(url);
@@ -227,10 +233,15 @@ impl InterceptorManager {
             }
         }
 
+        if let Some(url) = pending_redirect {
+            return InterceptAction::Redirect(url);
+        }
+        if let Some(mock) = pending_mock {
+            return InterceptAction::Mock(mock);
+        }
+
         InterceptAction::Continue
     }
-
-    /// Run all after-response interceptors.
     pub async fn run_after_response(&self, ctx: &mut ResponseContext) -> InterceptAction {
         let interceptors = self
             .interceptors

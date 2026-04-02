@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::time::{Duration, Instant};
-use tracing::{trace, debug, warn};
+use tracing::trace;
 
 #[derive(Debug, Clone)]
 pub struct PrefetchConfig {
@@ -47,7 +47,8 @@ pub struct PrefetchResult {
 pub struct Prefetcher {
     config: PrefetchConfig,
     queue: mpsc::Sender<PrefetchJob>,
-    stats: parking_lot::Mutex<PrefetcherStats>,
+    stats: Arc<parking_lot::Mutex<PrefetcherStats>>,
+    #[allow(dead_code)]
     semaphore: Arc<Semaphore>,
 }
 
@@ -56,7 +57,7 @@ impl Prefetcher {
         let (tx, mut rx) = mpsc::channel::<PrefetchJob>(100);
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
 
-        let stats = parking_lot::Mutex::new(PrefetcherStats::default());
+        let stats = Arc::new(parking_lot::Mutex::new(PrefetcherStats::default()));
 
         let worker_stats = stats.clone();
         let cooldown_ms = config.cooldown_ms;
@@ -133,13 +134,14 @@ pub struct PrefetcherStats {
 }
 
 pub struct AdaptivePrefetcher {
+    #[allow(dead_code)]
     base: Prefetcher,
     success_rates: parking_lot::RwLock<HashMap<String, f64>>,
 }
 
 impl AdaptivePrefetcher {
     pub fn new(client: reqwest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
-        let base = Prefetcher::new(client, config);
+        let base = Prefetcher::new(client, config, cache);
 
         Self {
             base,

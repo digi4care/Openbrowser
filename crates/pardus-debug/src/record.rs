@@ -12,6 +12,7 @@ pub enum ResourceType {
     Media,
     Fetch,
     Xhr,
+    WebSocket,
     Other,
 }
 
@@ -173,6 +174,7 @@ impl fmt::Display for ResourceType {
             Self::Media => write!(f, "media"),
             Self::Fetch => write!(f, "fetch"),
             Self::Xhr => write!(f, "xhr"),
+            Self::WebSocket => write!(f, "websocket"),
             Self::Other => write!(f, "other"),
         }
     }

@@ -38,8 +38,9 @@ impl CdpDomainHandler for DomDomain {
                 HandleResult::Ack
             }
             "getDocument" => {
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
                 let mut nm = ctx.node_map.lock().await;
-                let doc = match (ctx.get_html(target_id).await, ctx.get_url(target_id).await) {
+                let doc = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         build_document_tree(&page, &mut nm)
@@ -97,7 +98,8 @@ impl CdpDomainHandler for DomDomain {
                 }
 
                 let mut nm = ctx.node_map.lock().await;
-                let has_sel = match (ctx.get_html(target_id).await, ctx.get_url(target_id).await) {
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
+                let has_sel = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         page.has_selector(selector)
@@ -117,9 +119,10 @@ impl CdpDomainHandler for DomDomain {
             }
             "querySelectorAll" => {
                 let selector = params["selector"].as_str().unwrap_or("");
+                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
                 let mut nm = ctx.node_map.lock().await;
 
-                let node_ids: Vec<i64> = match (ctx.get_html(target_id).await, ctx.get_url(target_id).await) {
+                let node_ids: Vec<i64> = match (html_str, url) {
                     (Some(html_str), Some(url)) => {
                         let page = pardus_core::Page::from_html(&html_str, &url);
                         page.query_all(selector).iter().enumerate().map(|(i, _)| {

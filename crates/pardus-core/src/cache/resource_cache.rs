@@ -81,7 +81,7 @@ impl ResourceCache {
 
     pub fn get_fresh(&self, url: &str) -> Option<Arc<CachedResource>> {
         self.entries.get(url).and_then(|e| {
-            let entry = e.value().read().unwrap();
+            let entry = e.value().read().unwrap_or_else(|e| e.into_inner());
             if entry.is_fresh() {
                 Some(Arc::new(entry.clone()))
             } else {
@@ -106,7 +106,7 @@ impl ResourceCache {
         let size = content.len();
 
         if let Some(existing) = self.entries.remove(url) {
-            let existing_guard = existing.1.read().unwrap();
+            let existing_guard = existing.1.read().unwrap_or_else(|e| e.into_inner());
             self.current_size
                 .fetch_sub(existing_guard.content.len(), Ordering::SeqCst);
         }
@@ -140,14 +140,14 @@ impl ResourceCache {
 
     pub fn update_from_304(&self, url: &str, new_headers: &HeaderMap) {
         if let Some(entry) = self.entries.get(url) {
-            let mut guard = entry.write().unwrap();
+            let mut guard = entry.write().unwrap_or_else(|e| e.into_inner());
             guard.update_from_304(new_headers);
         }
     }
 
     pub fn needs_revalidation(&self, url: &str) -> bool {
         if let Some(entry) = self.entries.get(url) {
-            let guard = entry.read().unwrap();
+            let guard = entry.read().unwrap_or_else(|e| e.into_inner());
             guard.needs_validation()
         } else {
             true
@@ -156,7 +156,7 @@ impl ResourceCache {
 
     pub fn invalidate(&self, url: &str) {
         if let Some((_, entry)) = self.entries.remove(url) {
-            let guard = entry.read().unwrap();
+            let guard = entry.read().unwrap_or_else(|e| e.into_inner());
             self.current_size
                 .fetch_sub(guard.content.len(), Ordering::SeqCst);
         }
@@ -181,7 +181,10 @@ impl ResourceCache {
             .entries
             .iter()
             .filter(|e| {
-                let guard = e.value().read().unwrap();
+                let guard = e
+                    .value()
+                    .read()
+                    .unwrap_or_else(|poison| poison.into_inner());
                 guard.needs_validation() && !guard.cache_policy.has_validator
             })
             .map(|e| e.key().clone())
@@ -192,7 +195,7 @@ impl ResourceCache {
                 break;
             }
             if let Some((_, entry)) = self.entries.remove(&url) {
-                let guard = entry.read().unwrap();
+                let guard = entry.read().unwrap_or_else(|e| e.into_inner());
                 self.current_size
                     .fetch_sub(guard.content.len(), Ordering::SeqCst);
             }

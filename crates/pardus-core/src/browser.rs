@@ -45,10 +45,16 @@ impl Browser {
 
     /// Create a new Browser with the given configuration.
     pub fn new(config: BrowserConfig) -> Self {
-        let http_client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .user_agent(&config.user_agent)
-            .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
-            .cookie_store(true)
+            .timeout(std::time::Duration::from_millis(config.timeout_ms as u64));
+
+        // Sandbox: disable cookie store for ephemeral sessions
+        if !config.sandbox.ephemeral_session {
+            client_builder = client_builder.cookie_store(true);
+        }
+
+        let http_client = client_builder
             .build()
             .expect("failed to build HTTP client");
 
@@ -80,6 +86,11 @@ impl Browser {
     ///
     /// Fetches the page, builds the parsed HTML, updates tab history.
     pub async fn navigate(&mut self, url: &str) -> anyhow::Result<&Tab> {
+        // Sandbox: check navigation domain restriction
+        if !self.config.sandbox.is_navigation_allowed(url) {
+            anyhow::bail!("Navigation to '{}' blocked by sandbox policy", url);
+        }
+
         if self.active_tab.is_none() {
             let id = self.create_tab(url);
             let tab = self.tabs.get_mut(&id).unwrap();
@@ -96,6 +107,11 @@ impl Browser {
 
     /// Navigate with JS execution enabled.
     pub async fn navigate_with_js(&mut self, url: &str, wait_ms: u32) -> anyhow::Result<&Tab> {
+        // Sandbox: check navigation domain restriction
+        if !self.config.sandbox.is_navigation_allowed(url) {
+            anyhow::bail!("Navigation to '{}' blocked by sandbox policy", url);
+        }
+
         if self.active_tab.is_none() {
             let id = self.create_tab(url);
             let tab = self.tabs.get_mut(&id).unwrap();
@@ -125,6 +141,7 @@ impl Browser {
     /// Click an element. If JS is enabled, dispatches click event in V8 DOM first.
     /// If the click produces navigation, the tab is updated.
     pub async fn click(&mut self, selector: &str) -> anyhow::Result<InteractionResult> {
+        #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
             let app = self.temp_app();
@@ -143,9 +160,33 @@ impl Browser {
         self.apply_navigated_result(result)
     }
 
+    /// Click an element by its element ID (shown in semantic tree as [#1], [#2], etc.)
+    /// This is the preferred way for AI agents to click elements.
+    pub async fn click_by_id(&mut self, id: usize) -> anyhow::Result<InteractionResult> {
+        let page = self.require_active_page()?;
+        let handle = page.find_by_element_id(id).ok_or_else(|| {
+            anyhow::anyhow!("Element with ID {} not found", id)
+        })?;
+
+        #[cfg(feature = "js")]
+        if self.is_js_enabled() {
+            let selector = handle.selector.clone();
+            let app = self.temp_app();
+            let result = crate::interact::js_interact::js_click(&app, page, &selector).await?;
+            drop(app);
+            return self.apply_navigated_result(result);
+        }
+
+        let app = self.temp_app();
+        let result = crate::interact::actions::click(&app, page, &handle).await?;
+        drop(app);
+        self.apply_navigated_result(result)
+    }
+
     /// Type text into a form field.
     /// If JS is enabled, dispatches input/change events in V8 DOM.
     pub async fn type_text(&mut self, selector: &str, value: &str) -> anyhow::Result<InteractionResult> {
+        #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
             let result = crate::interact::js_interact::js_type(page, selector, value).await?;
@@ -159,6 +200,23 @@ impl Browser {
         crate::interact::actions::type_text(page, &handle, value)
     }
 
+    /// Type text into a form field by its element ID (shown in semantic tree as [#1], [#2], etc.)
+    /// This is the preferred way for AI agents to fill form fields.
+    pub async fn type_by_id(&mut self, id: usize, value: &str) -> anyhow::Result<InteractionResult> {
+        let page = self.require_active_page()?;
+        let handle = page.find_by_element_id(id).ok_or_else(|| {
+            anyhow::anyhow!("Element with ID {} not found", id)
+        })?;
+
+        #[cfg(feature = "js")]
+        if self.is_js_enabled() {
+            let selector = handle.selector.clone();
+            return crate::interact::js_interact::js_type(page, &selector, value).await;
+        }
+
+        crate::interact::actions::type_text(page, &handle, value)
+    }
+
     /// Submit a form with the given field values.
     /// If JS is enabled, dispatches submit event first and respects preventDefault.
     pub async fn submit(
@@ -166,6 +224,7 @@ impl Browser {
         form_selector: &str,
         state: &FormState,
     ) -> anyhow::Result<InteractionResult> {
+        #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
             let app = self.temp_app();
@@ -199,6 +258,7 @@ impl Browser {
     /// Scroll. If JS is enabled, dispatches scroll/wheel events in V8 DOM.
     /// Otherwise uses URL-based pagination detection.
     pub async fn scroll(&mut self, direction: ScrollDirection) -> anyhow::Result<InteractionResult> {
+        #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
             let result = crate::interact::js_interact::js_scroll(page, direction).await?;

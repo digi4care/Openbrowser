@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -167,7 +167,7 @@ pub async fn crawl(root_url: &str, config: &CrawlConfig) -> Result<KnowledgeGrap
 
 /// Discover all outgoing transitions for a page.
 fn discover_transitions_for_page(
-    graph: &KnowledgeGraph,
+    _graph: &KnowledgeGraph,
     _app: &Arc<App>,
     page: &Page,
     state_id: &ViewStateId,

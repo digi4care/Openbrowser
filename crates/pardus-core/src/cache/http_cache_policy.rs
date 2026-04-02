@@ -128,6 +128,9 @@ impl CachePolicy {
         if self.no_cache {
             return false;
         }
+        if self.immutable {
+            return true;
+        }
         let elapsed = stored_at.elapsed();
         elapsed < self.freshness_lifetime()
     }
@@ -208,9 +211,11 @@ mod tests {
     use super::*;
 
     fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
+        use reqwest::header::HeaderName;
         let mut m = HeaderMap::new();
         for (k, v) in pairs {
-            m.insert(*k, v.parse().unwrap());
+            let name = HeaderName::from_bytes(k.as_bytes()).expect("invalid header name");
+            m.insert(name, v.parse().unwrap());
         }
         m
     }

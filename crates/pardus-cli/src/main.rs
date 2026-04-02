@@ -170,16 +170,30 @@ enum Commands {
 
 #[derive(Clone, Subcommand)]
 pub enum InteractAction {
-    /// Click on an element
+    /// Click on an element using CSS selector
     Click {
         /// CSS selector of the element to click
         selector: String,
+    },
+
+    /// Click on an element using its element ID (e.g., 1, 2, 3)
+    ClickId {
+        /// Element ID shown in the semantic tree (e.g., 1, 2, 3)
+        id: usize,
     },
 
     /// Type text into a field
     Type {
         /// CSS selector of the field
         selector: String,
+        /// Value to type
+        value: String,
+    },
+
+    /// Type text into a field using its element ID
+    TypeId {
+        /// Element ID shown in the semantic tree
+        id: usize,
         /// Value to type
         value: String,
     },

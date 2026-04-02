@@ -1,10 +1,11 @@
-use scraper::{Html, Selector, ElementRef};
-use url::Url;
-use serde::Serialize;
+use scraper::{ElementRef, Html, Selector};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::LazyLock as Lazy;
+use url::Url;
 
 /// Navigation graph extracted from a page — all reachable routes and forms.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigationGraph {
     pub current_url: String,
     pub internal_links: Vec<Route>,
@@ -13,7 +14,7 @@ pub struct NavigationGraph {
 }
 
 /// A route (link) within the navigation graph.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     pub url: String,
     pub label: Option<String>,
@@ -21,7 +22,7 @@ pub struct Route {
 }
 
 /// A form descriptor with its fields.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormDescriptor {
     pub id: Option<String>,
     pub action: Option<String>,
@@ -30,7 +31,7 @@ pub struct FormDescriptor {
 }
 
 /// A single field within a form.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDescriptor {
     pub name: Option<String>,
     pub field_type: String,
@@ -40,29 +41,27 @@ pub struct FieldDescriptor {
 }
 
 // Pre-compiled selectors for performance
-static LINK_SELECTOR: Lazy<Selector> = Lazy::new(|| {
-    Selector::parse("a[href]").expect("'a[href]' is a valid CSS selector")
-});
+static LINK_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("a[href]").expect("'a[href]' is a valid CSS selector"));
 
-static FORM_SELECTOR: Lazy<Selector> = Lazy::new(|| {
-    Selector::parse("form").expect("'form' is a valid CSS selector")
-});
+static FORM_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("form").expect("'form' is a valid CSS selector"));
 
 static INPUT_SELECTOR: Lazy<Selector> = Lazy::new(|| {
-    Selector::parse("input, select, textarea").expect("'input, select, textarea' is a valid CSS selector")
+    Selector::parse("input, select, textarea")
+        .expect("'input, select, textarea' is a valid CSS selector")
 });
 
-static LABEL_SELECTOR: Lazy<Selector> = Lazy::new(|| {
-    Selector::parse("label").expect("'label' is a valid CSS selector")
-});
+static LABEL_SELECTOR: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("label").expect("'label' is a valid CSS selector"));
 
 impl NavigationGraph {
     /// Build a navigation graph from HTML and a base URL.
-    /// 
+    ///
     /// # Arguments
     /// * `html` - The parsed HTML document
     /// * `current_url` - The base URL for resolving relative links
-    /// 
+    ///
     /// # Returns
     /// A `NavigationGraph` containing all links, forms, and fields.
     pub fn build(html: &Html, current_url: &str) -> Self {
@@ -79,17 +78,19 @@ impl NavigationGraph {
                 };
             }
         };
-        
+
         let current_origin = base.origin().ascii_serialization();
-        
+
         let mut internal_links = Vec::new();
+        let mut internal_urls = HashSet::new();
         let mut external_links = Vec::new();
+        let mut external_urls = HashSet::new();
         let mut forms = Vec::new();
 
         // Collect links using pre-compiled selector
         for el in html.select(&*LINK_SELECTOR) {
             let href = el.value().attr("href").unwrap_or("");
-            
+
             // Skip empty, javascript:, and anchor-only links
             if href.is_empty() || href.starts_with("javascript:") || href.starts_with("#") {
                 continue;
@@ -108,7 +109,7 @@ impl NavigationGraph {
 
             if resolved.origin().ascii_serialization() == current_origin {
                 // Deduplicate internal links
-                if !internal_links.iter().any(|r: &Route| r.url == url_string) {
+                if internal_urls.insert(url_string.clone()) {
                     internal_links.push(Route {
                         url: url_string,
                         label: if label.is_empty() { None } else { Some(label) },
@@ -117,7 +118,7 @@ impl NavigationGraph {
                 }
             } else {
                 // Deduplicate external links
-                if !external_links.contains(&url_string) {
+                if external_urls.insert(url_string.clone()) {
                     external_links.push(url_string);
                 }
             }
@@ -125,11 +126,14 @@ impl NavigationGraph {
 
         // Collect forms using pre-compiled selector
         for form_el in html.select(&*FORM_SELECTOR) {
-            let action = form_el.value().attr("action")
+            let action = form_el
+                .value()
+                .attr("action")
                 .and_then(|a| base.join(a).ok())
                 .map(|u| u.to_string());
 
-            let method = form_el.value()
+            let method = form_el
+                .value()
                 .attr("method")
                 .map(|m| m.to_uppercase())
                 .filter(|m| *m == "GET" || *m == "POST")
@@ -140,7 +144,8 @@ impl NavigationGraph {
             let mut fields = Vec::new();
             for field_el in form_el.select(&*INPUT_SELECTOR) {
                 let field_name = field_el.value().attr("name").map(|s| s.to_string());
-                let field_type = field_el.value()
+                let field_type = field_el
+                    .value()
                     .attr("type")
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| field_el.value().name().to_string());
@@ -190,13 +195,13 @@ impl NavigationGraph {
 
     /// Check if the graph contains a specific URL (internal or external).
     pub fn contains_url(&self, url: &str) -> bool {
-        self.internal_links.iter().any(|r| r.url == url) 
+        self.internal_links.iter().any(|r| r.url == url)
             || self.external_links.contains(&url.to_string())
     }
 }
 
 /// Try to find a <label> associated with a form field.
-/// 
+///
 /// Uses the `for` attribute matching the field name, or
 /// checks for a label that wraps the field.
 fn find_label_for(form: &ElementRef, field_name: Option<&str>) -> Option<String> {
@@ -212,7 +217,7 @@ fn find_label_for(form: &ElementRef, field_name: Option<&str>) -> Option<String>
             }
         }
     }
-    
+
     None
 }
 
@@ -224,7 +229,7 @@ mod tests {
     fn test_empty_html() {
         let html = Html::parse_document("<html><body></body></html>");
         let graph = NavigationGraph::build(&html, "https://example.com");
-        
+
         assert_eq!(graph.internal_link_count(), 0);
         assert_eq!(graph.external_link_count(), 0);
         assert_eq!(graph.form_count(), 0);
@@ -232,13 +237,15 @@ mod tests {
 
     #[test]
     fn test_internal_link() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
             <a href="/about">About</a>
             </body></html>
-        "#);
+        "#,
+        );
         let graph = NavigationGraph::build(&html, "https://example.com");
-        
+
         assert_eq!(graph.internal_link_count(), 1);
         assert_eq!(graph.internal_links[0].url, "https://example.com/about");
         assert_eq!(graph.internal_links[0].label, Some("About".to_string()));
@@ -246,13 +253,15 @@ mod tests {
 
     #[test]
     fn test_external_link() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
             <a href="https://other.com">External</a>
             </body></html>
-        "#);
+        "#,
+        );
         let graph = NavigationGraph::build(&html, "https://example.com");
-        
+
         assert_eq!(graph.internal_link_count(), 0);
         assert_eq!(graph.external_link_count(), 1);
         assert!(graph.external_links[0].contains("other.com"));
@@ -260,31 +269,38 @@ mod tests {
 
     #[test]
     fn test_form_extraction() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
             <form action="/search" method="post">
                 <input type="text" name="query" placeholder="Search...">
                 <button type="submit">Search</button>
             </form>
             </body></html>
-        "#);
+        "#,
+        );
         let graph = NavigationGraph::build(&html, "https://example.com");
-        
+
         assert_eq!(graph.form_count(), 1);
-        assert_eq!(graph.forms[0].action, Some("https://example.com/search".to_string()));
+        assert_eq!(
+            graph.forms[0].action,
+            Some("https://example.com/search".to_string())
+        );
         assert_eq!(graph.forms[0].method, "POST");
     }
 
     #[test]
     fn test_contains_url() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
             <a href="/page1">Page 1</a>
             <a href="https://external.com">External</a>
             </body></html>
-        "#);
+        "#,
+        );
         let graph = NavigationGraph::build(&html, "https://example.com");
-        
+
         assert!(graph.contains_url("https://example.com/page1"));
         assert!(graph.contains_url("https://external.com/"));
         assert!(!graph.contains_url("https://example.com/notfound"));
@@ -294,7 +310,7 @@ mod tests {
     fn test_invalid_url_graceful() {
         let html = Html::parse_document("<html><body></body></html>");
         let graph = NavigationGraph::build(&html, "not-a-valid-url");
-        
+
         // Should return empty graph, not panic
         assert_eq!(graph.internal_link_count(), 0);
         assert_eq!(graph.external_link_count(), 0);

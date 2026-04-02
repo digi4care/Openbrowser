@@ -51,14 +51,19 @@ fn should_show(node: &SemanticNode) -> bool {
 }
 
 fn node_description(node: &SemanticNode) -> String {
+    // Helper to add element ID prefix for interactive elements
+    let id_prefix = node.element_id
+        .map(|id| format!("[#{}] ", id))
+        .unwrap_or_default();
+
     match &node.role {
         SemanticRole::Heading { level } => {
             let name = node.name.as_deref().unwrap_or("");
-            format!("heading (h{level})  \"{name}\"")
+            format!("{id_prefix}heading (h{level})  \"{name}\"")
         }
         SemanticRole::Link => {
             let name = node.name.as_deref().unwrap_or("");
-            let mut s = format!("link  \"{name}\"");
+            let mut s = format!("{id_prefix}link  \"{name}\"");
             if let Some(href) = &node.href {
                 s.push_str(&format!("  → {href}"));
             }
@@ -66,7 +71,7 @@ fn node_description(node: &SemanticNode) -> String {
         }
         SemanticRole::Button => {
             let name = node.name.as_deref().unwrap_or("");
-            let mut s = format!("button  \"{name}\"");
+            let mut s = format!("{id_prefix}button  \"{name}\"");
             if node.is_disabled {
                 s.push_str("  [disabled]");
             }
@@ -88,9 +93,9 @@ fn node_description(node: &SemanticNode) -> String {
         SemanticRole::TextBox => {
             let name = node.name.as_deref().unwrap_or("");
             let mut s = if name.is_empty() {
-                "textbox".to_string()
+                format!("{id_prefix}textbox")
             } else {
-                format!("textbox  \"{name}\"")
+                format!("{id_prefix}textbox  \"{name}\"")
             };
             if let Some(action) = &node.action {
                 s.push_str(&format!("  [action: {action}]"));
@@ -100,9 +105,9 @@ fn node_description(node: &SemanticNode) -> String {
         SemanticRole::Combobox => {
             let name = node.name.as_deref().unwrap_or("");
             let mut s = if name.is_empty() {
-                "combobox".to_string()
+                format!("{id_prefix}combobox")
             } else {
-                format!("combobox  \"{name}\"")
+                format!("{id_prefix}combobox  \"{name}\"")
             };
             if let Some(action) = &node.action {
                 s.push_str(&format!("  [action: {action}]"));
@@ -111,11 +116,11 @@ fn node_description(node: &SemanticNode) -> String {
         }
         SemanticRole::Checkbox => {
             let name = node.name.as_deref().unwrap_or("");
-            format!("checkbox  \"{name}\"  [action: toggle]")
+            format!("{id_prefix}checkbox  \"{name}\"  [action: toggle]")
         }
         SemanticRole::Radio => {
             let name = node.name.as_deref().unwrap_or("");
-            format!("radio  \"{name}\"  [action: toggle]")
+            format!("{id_prefix}radio  \"{name}\"  [action: toggle]")
         }
         SemanticRole::List => {
             let name = node.name.as_deref().map(|n| format!("  \"{n}\"")).unwrap_or_default();

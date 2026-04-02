@@ -14,15 +14,22 @@ pub mod parser;
 pub mod prefetch;
 pub mod push;
 pub mod resource;
+pub mod sandbox;
 pub mod semantic;
 pub mod session;
+pub mod sse;
 pub mod tab;
+pub mod url_policy;
+#[cfg(feature = "js")]
+pub mod websocket;
 
 pub use app::App;
 pub use browser::Browser;
 pub use config::BrowserConfig;
 pub use page::Page;
+pub use sandbox::{JsSandboxMode, SandboxPolicy};
 pub use page::PageSnapshot;
+pub use url_policy::UrlPolicy;
 #[cfg(feature = "js")]
 pub use js::runtime::execute_js;
 pub use semantic::tree::{SemanticNode, SemanticRole, SemanticTree, TreeStats};
@@ -33,3 +40,6 @@ pub use interact::{ElementHandle, FormState, InteractionResult, ScrollDirection}
 pub use tab::tab::TabConfig;
 pub use tab::{Tab, TabId, TabManager};
 pub use push::{PushCache, PushEntry, push_cache::PushSource, PushCacheStats, EarlyScanner};
+pub use sse::{SseEvent, SseManager, SseParser};
+#[cfg(feature = "js")]
+pub use websocket::{WebSocketConfig, WebSocketConnection, WebSocketManager};

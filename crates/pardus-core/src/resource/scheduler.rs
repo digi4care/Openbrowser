@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
-use tracing::{trace, instrument, debug};
+use tracing::{instrument, debug};
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub struct ResourceScheduler {
 
 impl ResourceScheduler {
     pub fn new(client: reqwest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
-        let fetcher = CachedFetcher::new(client, config.clone(), cache);
+        let fetcher = Arc::new(CachedFetcher::new(client, config.clone(), cache));
         Self {
             config,
             fetcher,
@@ -144,6 +144,12 @@ impl ResourceScheduler {
             .clone()
     }
 
+    /// Remove semaphores for origins that have been idle, preventing unbounded growth.
+    pub fn cleanup_idle_origins(&self, active_origins: &[String]) {
+        let mut semaphores = self.origin_semaphores.lock();
+        semaphores.retain(|origin, _| active_origins.contains(origin));
+    }
+
     pub async fn schedule_with_priority(
         &self,
         tasks: Vec<ResourceTask>,
@@ -219,7 +225,9 @@ impl StreamingResourceFetcher {
 
             tokio::spawn(async move {
                 let result = sched.fetcher.fetch(&task.url).await;
-                let _ = tx.send(result).await;
+                if tx.send(result).await.is_err() {
+                    tracing::debug!("fetch result dropped for {}: receiver gone", task.url);
+                }
             });
         }
 

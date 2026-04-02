@@ -5,7 +5,6 @@
 
 use bumpalo::Bump;
 use smallvec::SmallVec;
-use std::fmt;
 
 /// Node identifier - compact 32-bit index
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -283,7 +282,7 @@ impl<'a> Iterator for NodeIter<'a> {
 impl ArenaDom {
     /// Build from scraper Html document
     pub fn from_scraper(html: &scraper::Html) -> Self {
-        let mut dom = Self::with_capacity(html.tree.nodes().count());
+        let dom = Self::with_capacity(html.tree.nodes().count());
         // Convert scraper DOM to arena
         // Implementation would traverse scraper tree
         dom

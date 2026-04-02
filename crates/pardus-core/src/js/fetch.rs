@@ -9,12 +9,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use crate::cache::ResourceCache;
+use crate::url_policy::UrlPolicy;
 
-const OP_FETCH_TIMEOUT_MS: u64 = 10_000;
 const OP_FETCH_MAX_BODY_SIZE: usize = 1_048_576;
+
+// Sandbox: thread-local flag to block JS fetch without needing OpState in async context.
+// Set per-runtime-creation in execute_scripts_with_timeout.
+use std::sync::atomic::{AtomicBool, Ordering};
+static SANDBOX_FETCH_BLOCKED: AtomicBool = AtomicBool::new(false);
+
+/// Set whether JS fetch should be blocked by sandbox policy.
+/// Called when creating the JS runtime thread.
+pub fn set_sandbox_fetch_blocked(blocked: bool) {
+    SANDBOX_FETCH_BLOCKED.store(blocked, Ordering::SeqCst);
+}
+
+fn is_fetch_blocked_by_sandbox() -> bool {
+    SANDBOX_FETCH_BLOCKED.load(Ordering::SeqCst)
+}
 
 fn get_fetch_client() -> &'static reqwest::Client {
     crate::http::client::fetch_client()
@@ -25,24 +39,22 @@ fn get_fetch_cache() -> &'static Arc<ResourceCache> {
     CACHE.get_or_init(|| Arc::new(ResourceCache::new(100 * 1024 * 1024)))
 }
 
+/// Get the URL policy for JS fetch operations.
+/// Uses a strict default policy that blocks SSRF attacks.
+fn get_fetch_url_policy() -> &'static UrlPolicy {
+    static POLICY: OnceLock<UrlPolicy> = OnceLock::new();
+    POLICY.get_or_init(UrlPolicy::default)
+}
+
+/// Validate a URL for safe fetching.
+/// Blocks SSRF attacks by rejecting:
+/// - Non-HTTP(S) schemes (file://, ftp://, etc.)
+/// - Localhost and loopback addresses
+/// - Private IP ranges (10.x, 172.16-31.x, 192.168.x)
+/// - Link-local addresses (169.254.x.x)
+/// - Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
 fn is_url_safe(url: &str) -> bool {
-    let parsed = match url::Url::parse(url) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
-
-    match parsed.scheme() {
-        "http" | "https" => {}
-        _ => return false,
-    }
-
-    if let Some(host) = parsed.host_str() {
-        if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
-            return true;
-        }
-    }
-
-    true
+    get_fetch_url_policy().validate(url).is_ok()
 }
 
 fn build_request(
@@ -128,11 +140,23 @@ impl FetchCacheMode {
 #[op2]
 #[serde]
 pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
+    // Sandbox: block JS fetch if globally disabled
+    if is_fetch_blocked_by_sandbox() {
+        return FetchResult {
+            ok: false,
+            status: 403,
+            status_text: "Blocked: fetch is disabled by sandbox policy".to_string(),
+            headers: HashMap::new(),
+            body: String::new(),
+        };
+    }
+
+    // Validate URL against SSRF protection policy
     if !is_url_safe(&args.url) {
         return FetchResult {
             ok: false,
             status: 0,
-            status_text: "Blocked: unsafe URL scheme".to_string(),
+            status_text: "Blocked: URL blocked by security policy (SSRF protection)".to_string(),
             headers: HashMap::new(),
             body: String::new(),
         };
@@ -368,7 +392,7 @@ pub async fn execute_fetch(
     request: FetchRequest,
 ) -> anyhow::Result<FetchResponse> {
     if !is_url_safe(&request.url) {
-        anyhow::bail!("Blocked: unsafe URL scheme for {}", request.url);
+        anyhow::bail!("URL blocked by security policy (SSRF protection): {}", request.url);
     }
 
     let req = build_request(
@@ -391,4 +415,124 @@ pub async fn execute_fetch(
         body,
         ok,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_url_safe_allows_public_urls() {
+        assert!(is_url_safe("https://example.com"));
+        assert!(is_url_safe("http://example.com/path?query=1"));
+        assert!(is_url_safe("https://api.example.com:8080/v1/data"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_file_scheme() {
+        assert!(!is_url_safe("file:///etc/passwd"));
+        assert!(!is_url_safe("file://localhost/Users/test"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_ftp_scheme() {
+        assert!(!is_url_safe("ftp://ftp.example.com/file"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_data_scheme() {
+        assert!(!is_url_safe("data:text/html,<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_javascript_scheme() {
+        assert!(!is_url_safe("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_localhost() {
+        assert!(!is_url_safe("http://localhost/admin"));
+        assert!(!is_url_safe("http://LOCALHOST/admin"));
+        assert!(!is_url_safe("http://localhost.localdomain/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_loopback() {
+        assert!(!is_url_safe("http://127.0.0.1/admin"));
+        assert!(!is_url_safe("http://127.0.0.1:8080/api"));
+        assert!(!is_url_safe("http://[::1]/admin"));
+        assert!(!is_url_safe("http://[0:0:0:0:0:0:0:1]/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_private_ips() {
+        // 10.0.0.0/8
+        assert!(!is_url_safe("http://10.0.0.1/"));
+        assert!(!is_url_safe("http://10.255.255.255/"));
+
+        // 172.16.0.0/12
+        assert!(!is_url_safe("http://172.16.0.1/"));
+        assert!(!is_url_safe("http://172.31.255.255/"));
+        // 172.15.x.x is public
+        assert!(is_url_safe("http://172.15.0.1/"));
+        // 172.32.x.x is public
+        assert!(is_url_safe("http://172.32.0.1/"));
+
+        // 192.168.0.0/16
+        assert!(!is_url_safe("http://192.168.0.1/"));
+        assert!(!is_url_safe("http://192.168.1.1/"));
+        assert!(!is_url_safe("http://192.168.255.255/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_allows_public_ips() {
+        assert!(is_url_safe("http://8.8.8.8/"));
+        assert!(is_url_safe("http://1.1.1.1/"));
+        assert!(is_url_safe("http://93.184.216.34/")); // example.com IP
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_cloud_metadata() {
+        // AWS/GCP/Azure metadata endpoint
+        assert!(!is_url_safe("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_url_safe("http://metadata.google.internal/computeMetadata/v1/"));
+        assert!(!is_url_safe("http://metadata.azure.internal/"));
+        // Alibaba metadata
+        assert!(!is_url_safe("http://100.100.100.200/latest/meta-data/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_link_local() {
+        assert!(!is_url_safe("http://169.254.1.1/"));
+        assert!(!is_url_safe("http://169.254.100.50/"));
+    }
+
+    #[test]
+    fn test_is_url_safe_blocks_invalid_urls() {
+        assert!(!is_url_safe("not-a-url"));
+        assert!(!is_url_safe("://no-scheme.com"));
+        assert!(!is_url_safe(""));
+    }
+
+    #[test]
+    fn test_is_url_safe_case_insensitive_scheme() {
+        assert!(is_url_safe("HTTPS://example.com"));
+        assert!(is_url_safe("HtTp://example.com"));
+    }
+
+    #[test]
+    fn test_is_url_safe_ipv6_addresses() {
+        // Public IPv6 should work
+        assert!(is_url_safe("http://[2001:4860:4860::8888]/"));
+
+        // Loopback IPv6 blocked
+        assert!(!is_url_safe("http://[::1]/"));
+
+        // Link-local IPv6 blocked
+        assert!(!is_url_safe("http://[fe80::1]/"));
+
+        // Unique local (private) IPv6 blocked
+        assert!(!is_url_safe("http://[fc00::1]/"));
+        assert!(!is_url_safe("http://[fd00::1]/"));
+    }
 }

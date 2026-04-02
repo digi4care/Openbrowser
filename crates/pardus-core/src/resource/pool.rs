@@ -1,12 +1,9 @@
 //! HTTP/2 connection pool management
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use parking_lot::RwLock;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{trace, debug, warn};
+use tracing::trace;
 
 /// Pool configuration
 #[derive(Debug, Clone)]
@@ -52,6 +49,8 @@ impl ConnectionPool {
         &self,
         origin: &str,
     ) -> anyhow::Result<ConnectionHandle> {
+        self.cleanup();
+
         // Try to get existing idle connection
         {
             let mut conns = self.connections.write();
@@ -92,8 +91,8 @@ impl ConnectionPool {
 
         // Parse origin for connection
         let url = url::Url::parse(origin)?;
-        let host = url.host_str().unwrap_or("localhost");
-        let port = url.port().unwrap_or(443);
+        let _host = url.host_str().unwrap_or("localhost");
+        let _port = url.port().unwrap_or(443);
 
         // For now, return placeholder - reqwest handles actual connections
         let id = fastrand::u64(..);
@@ -172,10 +171,12 @@ impl ConnectionPool {
 /// Pooled connection metadata
 struct PooledConnection {
     id: u64,
+    #[allow(dead_code)]
     origin: String,
     created_at: std::time::Instant,
     last_used: std::time::Instant,
     requests_in_flight: usize,
+    #[allow(dead_code)]
     is_h2: bool,
 }
 
@@ -193,7 +194,9 @@ impl PooledConnection {
 /// Handle to a pooled connection
 #[derive(Debug)]
 pub struct ConnectionHandle {
+    #[allow(dead_code)]
     origin: String,
+    #[allow(dead_code)]
     id: u64,
 }
 
@@ -208,6 +211,7 @@ pub struct PoolStats {
 
 /// HTTP/2 specific connection with stream multiplexing
 pub struct H2Connection {
+    #[allow(dead_code)]
     origin: String,
     stream_counter: std::sync::atomic::AtomicUsize,
     max_concurrent_streams: usize,

@@ -112,6 +112,7 @@ fn url_path(url: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use pardus_debug::Initiator;
 
     fn ctx_with_url(url: &str) -> RequestContext {
         RequestContext {

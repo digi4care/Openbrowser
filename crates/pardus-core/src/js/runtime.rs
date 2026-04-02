@@ -16,6 +16,7 @@ use url::Url;
 
 use super::dom::DomDocument;
 use super::extension::pardus_dom;
+use crate::sandbox::{JsSandboxMode, SandboxPolicy};
 
 // ==================== Configuration ====================
 
@@ -264,7 +265,11 @@ fn transform_module_syntax(code: &str) -> String {
 // ==================== Runtime Creation ====================
 
 /// Create a deno runtime with our DOM extension.
-fn create_runtime(dom: Rc<RefCell<DomDocument>>, base_url: &Url) -> anyhow::Result<JsRuntime> {
+fn create_runtime(
+    dom: Rc<RefCell<DomDocument>>,
+    base_url: &Url,
+    sandbox: &SandboxPolicy,
+) -> anyhow::Result<JsRuntime> {
     let mut runtime = JsRuntime::new(RuntimeOptions {
         extensions: vec![pardus_dom::init()],
         ..Default::default()
@@ -275,6 +280,9 @@ fn create_runtime(dom: Rc<RefCell<DomDocument>>, base_url: &Url) -> anyhow::Resu
 
     // Store timer queue in op state
     runtime.op_state().borrow_mut().put(super::timer::TimerQueue::new());
+
+    // Store sandbox policy in op state so ops can check restrictions
+    runtime.op_state().borrow_mut().put(sandbox.clone());
 
     // Set up window.location from base_url
     let location_js = format!(
@@ -312,14 +320,13 @@ struct ThreadResult {
     dom_html: Option<String>,
     #[allow(dead_code)]
     error: Option<String>,
-}
-
-/// Execute scripts in a separate thread with timeout, graceful termination, and no leaks.
+}/// Execute scripts in a separate thread with timeout, graceful termination, and no leaks.
 fn execute_scripts_with_timeout(
     html: String,
     base_url: String,
     scripts: Vec<ScriptInfo>,
     timeout_ms: u64,
+    sandbox: SandboxPolicy,
 ) -> Option<String> {
     let result = Arc::new(Mutex::new(ThreadResult {
         dom_html: None,
@@ -334,7 +341,7 @@ fn execute_scripts_with_timeout(
         let base = match Url::parse(&base_url) {
             Ok(u) => u,
             Err(e) => {
-                *result_clone.lock().unwrap() = ThreadResult {
+                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = ThreadResult {
                     dom_html: None,
                     error: Some(format!("Invalid base URL: {}", e)),
                 };
@@ -343,13 +350,23 @@ fn execute_scripts_with_timeout(
         };
 
         // Create DOM from HTML
-        let dom = Rc::new(RefCell::new(DomDocument::from_html(&html)));
+        let mut doc = DomDocument::from_html(&html);
 
-        // Create runtime
-        let mut runtime = match create_runtime(dom.clone(), &base) {
+        // Sandbox: set max DOM nodes limit
+        if sandbox.js_max_dom_nodes > 0 {
+            doc.set_max_nodes(sandbox.js_max_dom_nodes);
+        }
+
+        // Sandbox: propagate fetch block flag for async ops (SSE uses OpState directly)
+        super::fetch::set_sandbox_fetch_blocked(sandbox.block_js_fetch);
+
+        let dom = Rc::new(RefCell::new(doc));
+
+        // Create runtime (pass sandbox policy)
+        let mut runtime = match create_runtime(dom.clone(), &base, &sandbox) {
             Ok(r) => r,
             Err(e) => {
-                *result_clone.lock().unwrap() = ThreadResult {
+                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = ThreadResult {
                     dom_html: None,
                     error: Some(format!("Failed to create runtime: {}", e)),
                 };
@@ -357,10 +374,13 @@ fn execute_scripts_with_timeout(
             }
         };
 
-        // Execute bootstrap.js
-        let bootstrap = include_str!("bootstrap.js");
+        // Execute bootstrap.js — select variant based on sandbox mode
+        let bootstrap = match sandbox.js_mode {
+            JsSandboxMode::ReadOnly => include_str!("bootstrap_readonly.js"),
+            _ => include_str!("bootstrap.js"),
+        };
         if let Err(e) = runtime.execute_script("bootstrap.js", bootstrap) {
-            *result_clone.lock().unwrap() = ThreadResult {
+            *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = ThreadResult {
                 dom_html: None,
                 error: Some(format!("Bootstrap error: {}", e)),
             };
@@ -414,6 +434,19 @@ fn execute_scripts_with_timeout(
                 )
                 .await;
             });
+
+            // Drain SSE events after each event loop poll
+            {
+                let op_state_rc = runtime.op_state();
+                let state_rc = op_state_rc.borrow();
+                if let Some(manager) = state_rc.try_borrow::<crate::sse::SseManager>() {
+                    let sse_js = manager.drain_events_js();
+                    if !sse_js.is_empty() {
+                        drop(state_rc);
+                        let _ = runtime.execute_script("sse_events.js", sse_js);
+                    }
+                }
+            }
         }
 
         // Drain expired timers (delay=0 callbacks)
@@ -438,7 +471,7 @@ fn execute_scripts_with_timeout(
 
         // Serialize DOM back to HTML
         let output = dom.borrow().to_html();
-        *result_clone.lock().unwrap() = ThreadResult {
+        *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = ThreadResult {
             dom_html: Some(output),
             error: None,
         };
@@ -474,7 +507,7 @@ fn execute_scripts_with_timeout(
 
     // One final check after the loop (fixes race condition where thread finishes between
     // is_finished() check and elapsed() check)
-    let guard = result.lock().unwrap();
+    let guard = result.lock().unwrap_or_else(|e| e.into_inner());
     guard.dom_html.clone()
 }
 
@@ -486,7 +519,20 @@ fn execute_scripts_with_timeout(
 /// `document` and `window` shim via ops that interact with the DOM.
 ///
 /// Thread-based timeout ensures we don't hang on complex scripts.
-pub async fn execute_js(html: &str, base_url: &str, wait_ms: u32) -> anyhow::Result<String> {
+#[must_use = "ignoring Result will silently discard JS execution errors"]
+pub async fn execute_js(
+    html: &str,
+    base_url: &str,
+    wait_ms: u32,
+    sandbox: Option<&SandboxPolicy>,
+) -> anyhow::Result<String> {
+    let sandbox = sandbox.cloned().unwrap_or_default();
+
+    // If JS is disabled by sandbox, return original HTML immediately
+    if sandbox.js_mode == JsSandboxMode::Disabled {
+        return Ok(html.to_string());
+    }
+
     // Parse base URL
     let base = match Url::parse(base_url) {
         Ok(u) => u,
@@ -494,7 +540,15 @@ pub async fn execute_js(html: &str, base_url: &str, wait_ms: u32) -> anyhow::Res
     };
 
     // Extract scripts from HTML
-    let scripts = extract_scripts(html);
+    let mut scripts = extract_scripts(html);
+
+    // Apply sandbox-configurable script limits
+    if sandbox.js_max_scripts > 0 {
+        scripts.truncate(sandbox.js_max_scripts);
+    }
+    if sandbox.js_max_script_size > 0 {
+        scripts.retain(|s| s.code.len() <= sandbox.js_max_script_size);
+    }
 
     // If no scripts, return original HTML
     if scripts.is_empty() {
@@ -507,12 +561,25 @@ pub async fn execute_js(html: &str, base_url: &str, wait_ms: u32) -> anyhow::Res
         base.as_str()
     );
 
+    // Use sandbox-configurable timeout if specified
+    let per_script_timeout = if sandbox.js_timeout_ms > 0 {
+        sandbox.js_timeout_ms
+    } else {
+        SCRIPT_TIMEOUT_MS
+    };
+
     // Calculate total timeout: per-script timeout * number of scripts, max 30s
-    let total_timeout = ((scripts.len() as u64) * SCRIPT_TIMEOUT_MS).min(30_000);
+    let total_timeout = ((scripts.len() as u64) * per_script_timeout).min(30_000);
     let timeout = total_timeout.max(wait_ms as u64);
 
     // Execute in a separate thread with timeout
-    let result = execute_scripts_with_timeout(html.to_string(), base_url.to_string(), scripts, timeout);
+    let result = execute_scripts_with_timeout(
+        html.to_string(),
+        base_url.to_string(),
+        scripts,
+        timeout,
+        sandbox,
+    );
 
     match result {
         Some(modified_html) => Ok(modified_html),
@@ -698,14 +765,14 @@ export function hello() {}</script>
     #[tokio::test]
     async fn test_execute_js_no_scripts() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = execute_js(html, "https://example.com", 100).await.unwrap();
+        let result = execute_js(html, "https://example.com", 100, None).await.unwrap();
         assert_eq!(result, html);
     }
 
     #[tokio::test]
     async fn test_execute_js_invalid_url() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = execute_js(html, "not-a-url", 100).await.unwrap();
+        let result = execute_js(html, "not-a-url", 100, None).await.unwrap();
         assert_eq!(result, html);
     }
 
@@ -716,7 +783,7 @@ export function hello() {}</script>
                 <script>gtag('event', 'click');</script>
             </body></html>
         "#;
-        let result = execute_js(html, "https://example.com", 100).await.unwrap();
+        let result = execute_js(html, "https://example.com", 100, None).await.unwrap();
         assert!(result.contains("<html>"));
     }
 
@@ -762,7 +829,7 @@ export function hello() {}</script>
                 <script>document.body.innerHTML = 'Safe';</script>
             </body></html>
         "#;
-        let result = execute_js(html, "https://example.com", 100).await.unwrap();
+        let result = execute_js(html, "https://example.com", 100, None).await.unwrap();
         assert!(result.contains("Safe"));
     }
 }

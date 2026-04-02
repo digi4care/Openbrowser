@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+use crate::sandbox::SandboxPolicy;
+use crate::url_policy::UrlPolicy;
+
 /// Connection pool configuration for HTTP client.
 #[derive(Debug, Clone)]
 pub struct ConnectionPoolConfig {
@@ -79,6 +82,11 @@ pub struct BrowserConfig {
     pub viewport_height: u32,
     pub connection_pool: ConnectionPoolConfig,
     pub push: PushConfig,
+    /// URL validation policy for SSRF protection.
+    pub url_policy: UrlPolicy,
+    /// Sandbox policy for restricting untrusted content execution.
+    /// Defaults to `SandboxPolicy::off()` (no restrictions).
+    pub sandbox: SandboxPolicy,
 }
 
 impl BrowserConfig {
@@ -100,6 +108,8 @@ impl Default for BrowserConfig {
             viewport_height: 720,
             connection_pool: ConnectionPoolConfig::default(),
             push: PushConfig::default(),
+            url_policy: UrlPolicy::default(),
+            sandbox: SandboxPolicy::default(),
         }
     }
 }

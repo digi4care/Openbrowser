@@ -30,8 +30,16 @@ pub async fn run(
             let result = browser.click(&selector).await?;
             output_result(&result, &format);
         }
+        InteractAction::ClickId { id } => {
+            let result = browser.click_by_id(id).await?;
+            output_result(&result, &format);
+        }
         InteractAction::Type { selector, value } => {
             let result = browser.type_text(&selector, &value).await?;
+            output_result(&result, &format);
+        }
+        InteractAction::TypeId { id, value } => {
+            let result = browser.type_by_id(id, &value).await?;
             output_result(&result, &format);
         }
         InteractAction::Submit { selector, field } => {

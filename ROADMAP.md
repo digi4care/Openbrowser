@@ -2,7 +2,7 @@
 
 ## Project Status Summary
 
-**Current Version:** 0.1.0-dev  
+**Current Version:** 0.4.0-dev  
 **Branch:** dev/interect  
 **Last Updated:** April 2026
 
@@ -33,6 +33,15 @@
 - [x] **Inline script execution** — Automatic execution of inline `<script>` tags
 - [x] **Script filtering** — Problematic scripts automatically filtered to prevent hangs
 
+### Security
+- [x] **SSRF protection** — `UrlPolicy` validates all fetched URLs
+  - Blocks private IPs (10.x, 172.16-31.x, 192.168.x), loopback, link-local (169.254.x), multicast
+  - Blocks cloud metadata endpoints (AWS 169.254.169.254, GCP, Azure, Alibaba)
+  - Blocks non-HTTP(S) schemes (file://, ftp://, data://, javascript:)
+  - Configurable modes: default, permissive, allowlist
+  - Wired into BrowserConfig and JS fetch API
+  - IPv4 and IPv6 validation with bracket notation support
+
 ### Session & State Management
 - [x] **Session persistence** — Cookies, localStorage, auth headers with size limits
 - [x] **Custom headers** — Authentication and custom header support
@@ -50,6 +59,17 @@
 - [x] **Parallel fetching** — Stylesheets, scripts, images fetched concurrently
 - [x] **Request recording** — Full HTTP request/response logging
 - [x] **Subresource discovery** — Automatic parsing of CSS/JS/image references
+
+### Server-Sent Events
+- [x] **SSE parser** — Streaming parser per HTML Living Standard (BOM stripping, multi-line data, chunked input, 48 tests)
+- [x] **SSE client** — Async client on dedicated 8-thread tokio background runtime with auto-reconnect
+- [x] **SSE manager** — Thread-safe connection manager (DashMap) with open/close/poll/drain
+- [x] **JS EventSource API** — Web-standard `EventSource` class with `MessageEvent`, event callbacks
+- [x] **4 deno_core ops** — `op_sse_open`, `op_sse_close`, `op_sse_ready_state`, `op_sse_url`
+- [x] **Auto-reconnect** — Exponential backoff (max 5 attempts, 30s cap), honors `retry:` field
+- [x] **Last-Event-ID** — Sent on reconnect for gapless event streams
+- [x] **SSRF protection** — UrlPolicy validates SSE URLs (blocks private IPs, loopback, metadata)
+- [x] **88 unit tests** — Parser (48), client with local TCP servers (17), manager (20), url_policy (3)
 
 ### CDP (Chrome DevTools Protocol)
 - [x] **WebSocket server** — CDP endpoint on ws://127.0.0.1:9222
@@ -72,7 +92,7 @@
 - [x] **Node mapping** — backendNodeId ↔ selector translation
 
 ### CLI & UX
-- [x] **7 subcommands:** navigate, interact, serve, repl, tab, clean
+- [x] **8 subcommands:** navigate, interact, serve, repl, tab, map, clean
 - [x] **Rustyline integration** — History, line editing in REPL
 - [x] **Shell-word parsing** — Proper argument handling in REPL
 - [x] **Verbose logging** — Debug output via tracing
@@ -98,6 +118,16 @@
   - DOM mutations serialized back to `Page` after each interaction
   - Ephemeral per-interaction V8 runtime (no `!Send` constraint issues)
   - Unit tests for click dispatch, inline handlers, type+change events, scroll, navigation detection, submit preventDefault
+
+### WebSocket
+- [x] **WebSocket connection** — `WebSocketConnection` wrapping tokio-tungstenite for WS/WSS
+  - `connect()`, `send_text()`, `send_binary()`, `recv()`, `close()` with TLS support
+  - Automatic Ping/Pong handling, frame-level statistics
+  - UrlPolicy validation on connect
+- [x] **WebSocket manager** — `WebSocketManager` for connection pooling
+  - Per-origin connection limits
+  - CDP event emission
+  - Lifecycle management
 
 ---
 
@@ -141,13 +171,20 @@
 - [x] **Memory limits** — Configurable per-tab memory caps
 
 ### Web Standards
-- [ ] **WebSocket support** — WS/WSS protocol handling
-- [ ] **EventSource/SSE** — Server-sent events for live pages
+- [x] **WebSocket support** — Full WS/WSS protocol handling with `WebSocketManager` and `WebSocketConnection`
+  - `WebSocketConnection`: `connect()`, `send_text()`, `send_binary()`, `recv()`, `close()` methods
+  - `WebSocketManager`: Connection pooling, per-origin limits, lifecycle management
+  - SSRF protection: Blocks private IPs, loopback, link-local, cloud metadata endpoints
+  - CDP events: `Network.webSocketCreated`, `Network.webSocketClosed`, `Network.webSocketFrameSent`, `Network.webSocketFrameReceived`
+  - IPv6 support: Blocks loopback (`::1`), link-local (`fe80::/10`), unique local (`fc00::/7`)
+  - 30 unit tests covering security, lifecycle, event bus, and URL validation
+- [x] **EventSource/SSE** — Full SSE implementation: parser (48 tests), async client with auto-reconnect, thread-safe manager, JS EventSource Web API, 4 deno_core ops, SSRF protection
 - [ ] **Shadow DOM** — Piercing shadow boundaries for web components
 - [ ] **IFrame handling** — Recursive frame parsing and interaction
 - [ ] **PDF viewing** — PDF.js-style rendering or extraction
 
 ### Security & Authentication
+- [x] **SSRF protection** — URL policy blocking private IPs, metadata endpoints, non-HTTP schemes
 - [ ] **Basic auth** — 401 response handling
 - [ ] **OAuth flow** — OAuth 2.0 / OIDC automation helpers
 - [ ] **Certificate pinning** — Custom CA/cert validation
@@ -195,6 +232,124 @@
 ---
 
 ## 📝 Changelog
+
+### v0.4.0 — WebSocket Full Implementation
+
+**WebSocket Support:**
+- Added `WebSocketConnection` module (`crates/pardus-core/src/websocket/connection.rs`)
+  - Async connect with configurable timeout
+  - `send_text()`, `send_binary()` for outgoing messages
+  - `recv()` returns `(WebSocketFrame, Vec<u8>)` for incoming messages
+  - Automatic Ping/Pong handling
+  - Connection statistics tracking (frames sent/received, bytes)
+  - Unique connection ID generation via URL hashing
+
+- Added `WebSocketManager` module (`crates/pardus-core/src/websocket/manager.rs`)
+  - Connection pooling with per-origin limits (`max_per_origin`)
+  - Configurable security policy (`block_private_ips`, `block_loopback`)
+  - CDP event bus integration for real-time notifications
+  - Event emission: `Network.webSocketCreated`, `Network.webSocketClosed`, `Network.webSocketFrameSent`, `Network.webSocketFrameReceived`
+
+- Added `WebSocketConfig` for connection settings
+  - `max_per_origin`: Maximum concurrent connections per origin (default: 6)
+  - `connect_timeout_secs`: Connection timeout (default: 30s)
+  - `max_message_size`: Maximum message size (default: 10MB)
+  - `block_private_ips`: Block private IP addresses (default: true)
+  - `block_loopback`: Block loopback addresses (default: true)
+
+- SSRF Protection for WebSocket
+  - Blocks private IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  - Blocks IPv6 unique local: fc00::/7
+  - Blocks IPv6 link-local: fe80::/10
+  - Blocks IPv6 loopback: ::1
+  - Blocks cloud metadata: metadata.google.internal, 169.254.169.254, 100.100.100.200
+  - Blocks localhost hostname
+
+- Added `ResourceType::WebSocket` to `pardus-debug` crate
+
+- Dependencies added:
+  - `tokio-tungstenite = "0.26"` — Async WebSocket client
+  - `tungstenite = "0.26"` — WebSocket protocol
+
+- Test coverage: 30 unit tests
+  - Config tests (2)
+  - Manager tests (15)
+  - IPv6 tests (3)
+  - Event bus tests (2)
+  - URL validation tests (5)
+  - Connection limit tests (2)
+  - Permissive policy tests (1)
+
+### v0.3.0 — SSE, WebSocket, SSRF Protection
+
+**Server-Sent Events (EventSource):**
+- Added `SseParser` — streaming SSE parser per HTML Living Standard (BOM stripping, multi-line data, chunked input, 48 tests)
+- Added `SseClient` — async SSE connection with reqwest, runs on dedicated 8-thread tokio background runtime
+- Added `SseManager` — thread-safe connection manager (DashMap) with `open`/`close`/`drain_events_js`
+- Auto-reconnect with exponential backoff (max 5 attempts, 30s cap), honors server `retry:` field
+- `Last-Event-ID` header sent on reconnect for gapless streams
+- SSRF protection via `UrlPolicy` — blocks private IPs, loopback, metadata endpoints, file:// scheme
+- 4 deno_core ops: `op_sse_open`, `op_sse_close`, `op_sse_ready_state`, `op_sse_url`
+- `drain_events_js()` generates JS dispatch code consumed by runtime event loop
+- `EventSource` Web API in bootstrap.js (CONNECTING/OPEN/CLOSED states, onopen/onmessage/onerror, addEventListener)
+- `MessageEvent` class, `__sse_dispatch` global for Rust→JS event dispatch
+- SSE event drain phase in `js/runtime.rs` after each event loop poll
+- `spawn_sse_connection_on()` for testability (decouples runtime from connection spawning)
+- 88 unit tests: 48 parser, 17 client (with local TCP test servers), 20 manager, 3 url_policy
+
+**WebSocket (Full Implementation):**
+- Added `WebSocketConnection` — wraps tokio-tungstenite for WS/WSS with TLS support
+- `connect()`, `send_text()`, `send_binary()`, `recv()`, `recv_text()`, `close()` API
+- Automatic Ping/Pong handling, frame-level statistics (`WebSocketStats`)
+- UrlPolicy validation on connect, connection ID via blake3 hash
+- Added `WebSocketManager` — connection pooling with per-origin limits
+- CDP event emission: `Network.webSocketCreated`, `Network.webSocketClosed`, `Network.webSocketFrameSent`, `Network.webSocketFrameReceived`
+- SSRF protection: Blocks private IPs (RFC 1918), loopback, link-local (169.254.x.x, fe80::/10), cloud metadata endpoints
+- IPv6 support: Blocks loopback (::1), link-local (fe80::/10), unique local (fc00::/7)
+- 30 unit tests covering security, lifecycle, event bus, URL validation
+
+**SSRF Protection:**
+- Added `UrlPolicy` — validates all URLs before fetching
+- Blocks private IPs (10.x, 172.16-31.x, 192.168.x), loopback, link-local (169.254.x), multicast
+- Blocks cloud metadata endpoints (AWS 169.254.169.254, GCP, Azure, Alibaba 100.100.100.200)
+- Blocks non-HTTP(S) schemes (file://, ftp://, data://, javascript:)
+- Three modes: `default()` (strict), `permissive()` (localhost allowed), `allowlist()`
+- Wired into `BrowserConfig` and JS `fetch()` API (15 unit tests)
+
+**Interceptor Pipeline:**
+- Fixed `run_before_request` to compose Redirect/Mock across all interceptors (previously returned on first match)
+
+**Preload Scanner Rewrite:**
+- Replaced single `RegexSet` with 6 per-tag-type classifiers (`classify_link`, `classify_script`)
+- Proper CORS attribute extraction (`crossorigin`, `use-credentials`, `anonymous`)
+- `modulepreload` recognition, better priority classification (preload/modulepreload → High, async/defer → Low)
+
+**Streaming Parser Simplification:**
+- Removed `lol_html` dependency; now uses regex-based `PreloadScanner` + `LazyDom`
+
+**Cache:**
+- `CachePolicy::is_fresh()` returns `true` for `immutable` resources (bypasses freshness lifetime calculation)
+
+**Navigation Graph:**
+- Added `Clone` + `Deserialize` derives to `NavigationGraph`, `Route`, `FormDescriptor`, `FieldDescriptor`
+
+**Parser:**
+- `LazyDom`: added `from_bytes()` (infallible), `Default` impl, fixed `select()` lifetime, removed `Send + Sync` bound
+- Early scanner: relaxed image prefetch to `priority <= High` (was Critical only)
+
+**Resource Module:**
+- `FetchResult::error()` simplified to take `String`
+- `CachedFetcher` wrapped in `Arc`, `PriorityQueue::peek()` returns references
+
+**JS:**
+- Fixed DOM tree bug where `child_id` return value was unused in `js/dom.rs`
+- Conditional JS compilation: `#[cfg(feature = "js")]` guards on interaction methods in `browser.rs`
+
+**Prefetcher:**
+- Now takes shared `client: reqwest::Client` + `cache: Arc<ResourceCache>` (no duplicate client creation)
+
+**Toolchain:**
+- Added `rust-toolchain.toml` pinning to nightly
 
 ### v0.2.0 — CDP & Cookie Optimizations
 

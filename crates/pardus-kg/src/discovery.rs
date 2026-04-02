@@ -2,7 +2,6 @@ use scraper::{Html, Selector};
 use std::sync::LazyLock as Lazy;
 
 use pardus_core::NavigationGraph;
-use pardus_core::interact::ScrollDirection;
 
 use crate::state::ViewStateId;
 use crate::transition::Trigger;
@@ -19,7 +18,7 @@ pub struct DiscoveredTransition {
 pub fn discover_link_transitions(
     nav_graph: &NavigationGraph,
     root_origin: &str,
-    parent_id: &ViewStateId,
+    _parent_id: &ViewStateId,
 ) -> Vec<DiscoveredTransition> {
     nav_graph
         .internal_links
@@ -93,10 +92,10 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
                 let next_page = page_num + 1;
                 let next_url = set_query_param_val(&url, "page", &next_page.to_string());
                 results.push(DiscoveredTransition {
-                    target_url: next_url,
+                    target_url: next_url.clone(),
                     trigger: Trigger::Pagination {
                         from_url: page_url.to_string(),
-                        to_url: set_query_param_val(&url, "page", &next_page.to_string()),
+                        to_url: next_url,
                     },
                 });
             }
@@ -110,7 +109,7 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
             let next_offset = offset + page_size;
             let next_url = set_query_param_val(&url, "offset", &next_offset.to_string());
             results.push(DiscoveredTransition {
-                target_url: next_url,
+                target_url: next_url.clone(),
                 trigger: Trigger::Pagination {
                     from_url: page_url.to_string(),
                     to_url: next_url,
@@ -126,7 +125,7 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
             let next_start = start + step;
             let next_url = set_query_param_val(&url, "start", &next_start.to_string());
             results.push(DiscoveredTransition {
-                target_url: next_url,
+                target_url: next_url.clone(),
                 trigger: Trigger::Pagination {
                     from_url: page_url.to_string(),
                     to_url: next_url,
@@ -233,13 +232,14 @@ mod tests {
 
     #[test]
     fn test_hash_navigation() {
-        let html = Html::parse_document(r#"
+        let html_content = r##"
             <html><body>
                 <a href="#features">Features</a>
                 <a href="#pricing">Pricing</a>
                 <a href="#">Skip</a>
             </body></html>
-        "#);
+        "##;
+        let html = Html::parse_document(html_content);
         let results = discover_hash_transitions(&html, "https://example.com/");
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].target_url, "https://example.com/#features");
@@ -248,12 +248,13 @@ mod tests {
 
     #[test]
     fn test_hash_navigation_empty_fragment_skipped() {
-        let html = Html::parse_document(r#"
+        let html_content = r##"
             <html><body>
                 <a href="#">Top</a>
                 <a href="#!">Bang</a>
             </body></html>
-        "#);
+        "##;
+        let html = Html::parse_document(html_content);
         let results = discover_hash_transitions(&html, "https://example.com/");
         assert!(results.is_empty());
     }

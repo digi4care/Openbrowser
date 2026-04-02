@@ -106,6 +106,9 @@ pub async fn submit_form(
         .map(|u| u.to_string())
         .unwrap_or_else(|_| action.to_string());
 
+    // Validate action URL against security policy (SSRF protection)
+    app.validate_url(&action_url)?;
+
     // Collect all form fields from HTML
     let html_fields = collect_form_fields(&form_el);
 

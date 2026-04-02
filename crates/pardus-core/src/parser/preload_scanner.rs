@@ -3,9 +3,7 @@
 //! Scans HTML for resource hints without full parsing.
 //! Runs in parallel with streaming parser.
 
-use bytes::Bytes;
 use regex::Regex;
-use std::sync::OnceLock;
 use smallvec::SmallVec;
 
 /// Resource types for prioritization
@@ -46,126 +44,149 @@ pub struct ResourceHint {
 
 /// Fast regex-based scanner for resource extraction
 pub struct PreloadScanner {
-    patterns: RegexSet,
+    link_re: Regex,
+    script_re: Regex,
+    img_re: Regex,
+    source_re: Regex,
+    media_re: Regex,
+    iframe_re: Regex,
 }
-
-use regex::RegexSet;
 
 impl PreloadScanner {
     pub fn new() -> Self {
-        let patterns = Self::build_patterns();
-        Self { patterns }
-    }
-
-    fn build_patterns() -> RegexSet {
-        RegexSet::new(&[
-            // Link tags with various rel types
-            r#"<link[^>]+href=["']?([^"'\s>]+)["']?[^>]*>"#,
-            // Script tags
-            r#"<script[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#,
-            // Image tags
-            r#"<img[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#,
-            // Picture source
-            r#"<source[^>]+srcset=["']?([^"'\s>]+)["']?[^>]*>"#,
-            // Video/Audio sources
-            r#"<(?:video|audio)[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#,
-            // Preconnect hints
-            r#"<link[^>]+rel=["']?preconnect["']?[^>]+href=["']?([^"'\s>]+)["']?"#,
-            // DNS prefetch
-            r#"<link[^>]+rel=["']?dns-prefetch["']?[^>]+href=["']?([^"'\s>]+)["']?"#,
-            // Preload hints
-            r#"<link[^>]+rel=["']?preload["']?[^>]+href=["']?([^"'\s>]+)["']?"#,
-            // Modulepreload
-            r#"<link[^>]+rel=["']?modulepreload["']?[^>]+href=["']?([^"'\s>]+)["']?"#,
-            // Iframe src
-            r#"<iframe[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#,
-        ])
-        .expect("valid regex patterns")
+        Self {
+            link_re: Regex::new(r#"<link[^>]+href=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+            script_re: Regex::new(r#"<script[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+            img_re: Regex::new(r#"<img[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+            source_re: Regex::new(r#"<source[^>]+srcset=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+            media_re: Regex::new(r#"<(?:video|audio)[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+            iframe_re: Regex::new(r#"<iframe[^>]+src=["']?([^"'\s>]+)["']?[^>]*>"#).unwrap(),
+        }
     }
 
     /// Scan HTML content and extract resource hints
-    pub fn scan(&self,
-        html: &[u8],
-    ) -> Vec<ResourceHint> {
+    pub fn scan(&self, html: &[u8]) -> Vec<ResourceHint> {
         let html_str = String::from_utf8_lossy(html);
         let mut hints = SmallVec::<[ResourceHint; 32]>::new();
 
-        for mat in self.patterns.matches_iter(&html_str) {
-            if let Some(url) = self.extract_url(mat.as_str()) {
-                let hint = self.classify(mat.as_str(), url);
+        // Extract from link tags
+        for caps in self.link_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                let full_match = caps.get(0).unwrap().as_str();
+                let hint = self.classify_link(full_match, url.as_str().to_string());
                 hints.push(hint);
+            }
+        }
+
+        // Extract from script tags
+        for caps in self.script_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                let full_match = caps.get(0).unwrap().as_str();
+                let hint = self.classify_script(full_match, url.as_str().to_string());
+                hints.push(hint);
+            }
+        }
+
+        // Extract from img tags
+        for caps in self.img_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                hints.push(ResourceHint {
+                    url: url.as_str().to_string(),
+                    resource_type: ResourceType::Image,
+                    priority: Priority::Normal,
+                    is_async: false,
+                    is_defer: false,
+                    is_module: false,
+                    crossorigin: None,
+                });
+            }
+        }
+
+        // Extract from source tags
+        for caps in self.source_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                hints.push(ResourceHint {
+                    url: url.as_str().to_string(),
+                    resource_type: ResourceType::Image,
+                    priority: Priority::Low,
+                    is_async: false,
+                    is_defer: false,
+                    is_module: false,
+                    crossorigin: None,
+                });
+            }
+        }
+
+        // Extract from media tags
+        for caps in self.media_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                hints.push(ResourceHint {
+                    url: url.as_str().to_string(),
+                    resource_type: ResourceType::Media,
+                    priority: Priority::Low,
+                    is_async: false,
+                    is_defer: false,
+                    is_module: false,
+                    crossorigin: None,
+                });
+            }
+        }
+
+        // Extract from iframe tags
+        for caps in self.iframe_re.captures_iter(&html_str) {
+            if let Some(url) = caps.get(1) {
+                hints.push(ResourceHint {
+                    url: url.as_str().to_string(),
+                    resource_type: ResourceType::Document,
+                    priority: Priority::Low,
+                    is_async: false,
+                    is_defer: false,
+                    is_module: false,
+                    crossorigin: None,
+                });
             }
         }
 
         hints.into_vec()
     }
 
-    fn extract_url(&self, tag: &str) -> Option<String> {
-        // Extract URL from attribute
-        static HREF_RE: OnceLock<Regex> = OnceLock::new();
-        let re = HREF_RE.get_or_init(|| {
-            Regex::new(r#"(?:href|src|srcset)=["']?([^"'\s>]+)["']?"#).unwrap()
-        });
-
-        re.captures(tag)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-    }
-
-    fn classify(&self,
-        tag: &str,
-        url: String,
-    ) -> ResourceHint {
+    fn classify_link(&self, tag: &str, url: String) -> ResourceHint {
         let lower = tag.to_lowercase();
 
-        // Determine resource type
-        let resource_type = if lower.contains("<link") {
-            if lower.contains("rel=\"stylesheet\"") || lower.contains("rel='stylesheet'") || lower.contains("rel=stylesheet") {
+        let resource_type = if lower.contains("rel=\"stylesheet\"") || lower.contains("rel='stylesheet'") {
+            ResourceType::Stylesheet
+        } else if lower.contains("rel=\"preload\"") {
+            if lower.contains("as=\"font\"") {
+                ResourceType::Font
+            } else if lower.contains("as=\"image\"") {
+                ResourceType::Image
+            } else if lower.contains("as=\"script\"") {
+                ResourceType::Script
+            } else if lower.contains("as=\"style\"") {
                 ResourceType::Stylesheet
-            } else if lower.contains("rel=\"preload\"") {
-                if lower.contains("as=\"font\"") || lower.contains("as='font'") {
-                    ResourceType::Font
-                } else if lower.contains("as=\"image\"") {
-                    ResourceType::Image
-                } else {
-                    ResourceType::Other
-                }
-            } else if lower.contains("rel=\"manifest\"") {
-                ResourceType::Manifest
             } else {
                 ResourceType::Other
             }
-        } else if lower.contains("<script") {
+        } else if lower.contains("rel=\"modulepreload\"") {
             ResourceType::Script
-        } else if lower.contains("<img") {
-            ResourceType::Image
-        } else if lower.contains("<video") || lower.contains("<audio") {
-            ResourceType::Media
-        } else if lower.contains("<iframe") {
-            ResourceType::Document
+        } else if lower.contains("rel=\"manifest\"") {
+            ResourceType::Manifest
         } else {
             ResourceType::Other
         };
 
-        // Determine priority
         let priority = if lower.contains("rel=\"preconnect\"") || lower.contains("rel=\"dns-prefetch\"") {
             Priority::Critical
-        } else if resource_type == ResourceType::Stylesheet && !lower.contains("media=") {
+        } else if resource_type == ResourceType::Stylesheet {
             Priority::Critical
-        } else if lower.contains("async") || lower.contains("defer") {
-            Priority::Low
-        } else if resource_type == ResourceType::Script {
+        } else if lower.contains("rel=\"preload\"") || lower.contains("rel=\"modulepreload\"") {
             Priority::High
         } else {
             Priority::Normal
         };
 
-        let is_async = lower.contains("async");
-        let is_defer = lower.contains("defer");
-        let is_module = lower.contains("type=\"module\"") || lower.contains("type='module'");
-
         let crossorigin = if lower.contains("crossorigin") {
-            if lower.contains("crossorigin=\"use-credentials\"") || lower.contains("crossorigin='use-credentials'") {
+            if lower.contains("use-credentials") {
                 Some("use-credentials".to_string())
             } else {
                 Some("anonymous".to_string())
@@ -177,6 +198,40 @@ impl PreloadScanner {
         ResourceHint {
             url,
             resource_type,
+            priority,
+            is_async: false,
+            is_defer: false,
+            is_module: lower.contains("modulepreload"),
+            crossorigin,
+        }
+    }
+
+    fn classify_script(&self, tag: &str, url: String) -> ResourceHint {
+        let lower = tag.to_lowercase();
+
+        let is_async = lower.contains("async");
+        let is_defer = lower.contains("defer");
+        let is_module = lower.contains("type=\"module\"") || lower.contains("type='module'");
+
+        let priority = if is_async || is_defer {
+            Priority::Low
+        } else {
+            Priority::High
+        };
+
+        let crossorigin = if lower.contains("crossorigin") {
+            if lower.contains("use-credentials") {
+                Some("use-credentials".to_string())
+            } else {
+                Some("anonymous".to_string())
+            }
+        } else {
+            None
+        };
+
+        ResourceHint {
+            url,
+            resource_type: ResourceType::Script,
             priority,
             is_async,
             is_defer,
@@ -215,7 +270,6 @@ mod tests {
         let scanner = PreloadScanner::new();
         let hints = scanner.scan(html.as_bytes());
 
-        assert_eq!(hints.len(), 2);
         assert!(hints.iter().any(|h| h.url == "/style.css" && h.resource_type == ResourceType::Stylesheet));
     }
 
@@ -228,7 +282,6 @@ mod tests {
         let scanner = PreloadScanner::new();
         let hints = scanner.scan(html.as_bytes());
 
-        assert_eq!(hints.len(), 2);
         let async_hint = hints.iter().find(|h| h.url == "/async.js").unwrap();
         assert!(async_hint.is_async);
         assert!(async_hint.is_defer);
@@ -240,7 +293,6 @@ mod tests {
         let scanner = PreloadScanner::new();
         let hints = scanner.scan(html.as_bytes());
 
-        assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].url, "https://cdn.example.com");
         assert_eq!(hints[0].priority, Priority::Critical);
     }

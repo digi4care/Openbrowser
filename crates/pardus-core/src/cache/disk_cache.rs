@@ -56,14 +56,18 @@ pub struct DiskCache {
     current_size: std::sync::atomic::AtomicUsize,
 }
 
+fn default_system_time() -> SystemTime {
+    SystemTime::UNIX_EPOCH
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CacheIndexEntry {
     key: String,
     file_path: PathBuf,
     size: usize,
-    #[serde(default)]
+    #[serde(default = "default_system_time")]
     created: SystemTime,
-    #[serde(default)]
+    #[serde(default = "default_system_time")]
     accessed: SystemTime,
     #[serde(default)]
     meta: Option<CacheMeta>,
@@ -194,7 +198,9 @@ impl DiskCache {
             .fetch_add(size, std::sync::atomic::Ordering::SeqCst);
 
         if self.index.lock().len() % 100 == 0 {
-            let _ = self.save_index();
+            if let Err(e) = self.save_index() {
+                warn!("failed to persist disk cache index: {}", e);
+            }
         }
 
         debug!("wrote to disk cache: {} ({} bytes)", key, size);
@@ -281,6 +287,25 @@ impl DiskCache {
             }
         }
 
+        // Also enforce max_entries limit
+        if idx.len() > self.config.max_entries {
+            let excess = idx.len() - self.config.max_entries;
+            let mut lru_entries: Vec<_> = idx.values().collect();
+            lru_entries.sort_by_key(|e| e.accessed);
+            let keys_to_remove: Vec<String> = lru_entries
+                .iter()
+                .take(excess)
+                .map(|e| e.key.clone())
+                .collect();
+            for key in &keys_to_remove {
+                if let Some(entry) = idx.get(key) {
+                    let _ = fs::remove_file(&entry.file_path);
+                    freed += entry.size;
+                }
+                idx.remove(key);
+            }
+        }
+
         if current - freed + needed <= self.config.max_size {
             drop(idx);
             self.current_size
@@ -292,14 +317,19 @@ impl DiskCache {
         let mut entries: Vec<_> = idx.values().collect();
         entries.sort_by_key(|e| e.accessed);
 
-        for entry in entries {
-            if current - freed + needed <= self.config.max_size {
-                break;
-            }
+        // Collect keys to remove
+        let keys_to_remove: Vec<_> = entries
+            .iter()
+            .take_while(|_| current - freed + needed > self.config.max_size)
+            .map(|e| (e.key.clone(), e.file_path.clone(), e.size))
+            .collect();
 
-            idx.remove(&entry.key);
-            let _ = fs::remove_file(&entry.file_path);
-            freed += entry.size;
+        drop(entries);
+
+        for (key, file_path, size) in keys_to_remove {
+            idx.remove(&key);
+            let _ = fs::remove_file(&file_path);
+            freed += size;
         }
 
         drop(idx);

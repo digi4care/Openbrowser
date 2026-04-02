@@ -35,7 +35,9 @@ pub struct Page {
 }
 
 impl Page {
-    pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+    async fn fetch_html(app: &Arc<App>, url: &str) -> anyhow::Result<(String, u16, String, Option<String>)> {
+        app.validate_url(url)?;
+
         let start = Instant::now();
 
         let response = app.http_client.get(url).send().await?;
@@ -55,14 +57,32 @@ impl Page {
 
         let body = response.text().await?;
         let body_size = body.len();
+
+        // Sandbox: check max page size
+        if app.config.sandbox.max_page_size > 0 && body_size > app.config.sandbox.max_page_size {
+            anyhow::bail!(
+                "Page size ({} bytes) exceeds sandbox limit ({} bytes)",
+                body_size,
+                app.config.sandbox.max_page_size
+            );
+        }
+
         let timing_ms = start.elapsed().as_millis();
 
         record_main_request(app, url, &final_url, status, &content_type, body_size, timing_ms, &resp_headers);
 
         validate_content_type_pub(content_type.as_deref(), &final_url)?;
 
-        // Speculative push: scan <head> and pre-fetch critical subresources
-        spawn_push_fetches(&app.http_client, &body, &final_url, app.config.push.enable_push);
+        // Sandbox: disable push if sandbox says so
+        let push_enabled = app.config.push.enable_push && !app.config.sandbox.disable_push;
+        spawn_push_fetches(&app.http_client, &body, &final_url, push_enabled);
+
+        Ok((body, status, final_url, content_type))
+    }
+
+    #[must_use = "ignoring Result may silently swallow navigation errors"]
+    pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+        let (body, status, final_url, content_type) = Self::fetch_html(app, url).await?;
 
         let html = Html::parse_document(&body);
         let base_url = Self::extract_base_url(&html, &final_url);
@@ -76,38 +96,13 @@ impl Page {
         })
     }
 
+    #[must_use = "ignoring Result may silently swallow navigation errors"]
     #[cfg(feature = "js")]
     pub async fn from_url_with_js(app: &Arc<App>, url: &str, wait_ms: u32) -> anyhow::Result<Self> {
-        let start = Instant::now();
-
-        let response = app.http_client.get(url).send().await?;
-        let status = response.status().as_u16();
-        let final_url = response.url().to_string();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-
-        let resp_headers: Vec<(String, String)> = response
-            .headers()
-            .iter()
-            .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
-            .collect();
-
-        let body = response.text().await?;
-        let body_size = body.len();
-        let timing_ms = start.elapsed().as_millis();
-
-        record_main_request(app, url, &final_url, status, &content_type, body_size, timing_ms, &resp_headers);
-
-        validate_content_type_pub(content_type.as_deref(), &final_url)?;
-
-        // Speculative push: scan <head> and pre-fetch critical subresources
-        spawn_push_fetches(&app.http_client, &body, &final_url, app.config.push.enable_push);
+        let (body, status, final_url, content_type) = Self::fetch_html(app, url).await?;
 
         let base_url = Self::extract_base_url(&Html::parse_document(&body), &final_url);
-        let final_body = crate::js::execute_js(&body, &base_url, wait_ms).await?;
+        let final_body = crate::js::execute_js(&body, &base_url, wait_ms, Some(&app.config.sandbox)).await?;
 
         let html = Html::parse_document(&final_body);
         let base_url = Self::extract_base_url(&html, &final_url);
@@ -177,6 +172,14 @@ impl Page {
     pub fn find_by_action(&self, action: &str, name: Option<&str>) -> Option<ElementHandle> {
         let tree = self.semantic_tree();
         let node = find_node_by_action(&tree.root, action, name)?;
+        node_to_handle(&node, &self.html)
+    }
+
+    /// Find an interactive element by its element ID (e.g., 1, 2, 3).
+    /// This is the preferred way for AI agents to reference elements.
+    pub fn find_by_element_id(&self, id: usize) -> Option<ElementHandle> {
+        let tree = self.semantic_tree();
+        let node = find_node_by_element_id(&tree.root, id)?;
         node_to_handle(&node, &self.html)
     }
 
@@ -486,6 +489,18 @@ fn find_node_by_action<'a>(
     }
     for child in &node.children {
         if let Some(found) = find_node_by_action(child, action, target_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_node_by_element_id<'a>(node: &'a SemanticNode, target_id: usize) -> Option<&'a SemanticNode> {
+    if node.element_id == Some(target_id) {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node_by_element_id(child, target_id) {
             return Some(found);
         }
     }

@@ -10,10 +10,12 @@ $ pardus-browser navigate https://example.com
        document  [role: document]
        └── region  [role: region]
            ├── heading (h1)  "Example Domain"
-           └── link  "Learn more"  → https://iana.org/domains/example
+           └── [#1] link  "Learn more"  → https://iana.org/domains/example
 00:05  semantic tree ready — 0 landmarks, 1 links, 1 headings, 1 actions
 00:05  agent-ready: structured state exposed · no pixel buffer · 0 screenshots
 ```
+
+**Element IDs** — Interactive elements are tagged with unique IDs (`[#1]`, `[#2]`, etc.) that AI agents can use to reference them. This makes it easy for agents to interact with specific elements without needing to understand CSS selectors.
 
 ## Why
 
@@ -28,6 +30,7 @@ No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 ## Features
 
 - **Semantic tree output** — ARIA roles, headings, landmarks, interactive elements
+- **Element IDs** — Unique IDs for interactive elements (e.g., `[#1]`, `[#2]`) that AI agents can use for easy reference
 - **Page interaction** — Click links, submit forms, type into fields, wait for selectors, scroll
 - **3 output formats** — Markdown (default), tree, JSON
 - **Navigation graph** — Internal routes, external links, form descriptors with fields
@@ -102,26 +105,28 @@ pardus-browser navigate https://example.com --format json --network-log
 
 ### Output formats
 
-**Markdown (default)** — clean semantic tree with role annotations:
+**Markdown (default)** — clean semantic tree with role annotations and element IDs:
 
 ```
 document  [role: document]
 ├── banner  [role: banner]
-│   ├── link "Home"  → /
-│   ├── link "Products"  → /products
-│   └── button "Sign In"
+│   ├── [#1] link "Home"  → /
+│   ├── [#2] link "Products"  → /products
+│   └── [#3] button "Sign In"
 ├── main  [role: main]
 │   ├── heading (h1) "Welcome to Example"
 │   ├── region "Hero"
 │   │   ├── text "The fastest way to build"
-│   │   └── link "Get Started"  → /signup
+│   │   └── [#4] link "Get Started"  → /signup
 │   └── form "Search"  [role: form]
-│       ├── textbox "Search..."  [action: fill]
-│       └── button "Go"  [action: click]
+│       ├── [#5] textbox "Search..."  [action: fill]
+│       └── [#6] button "Go"  [action: click]
 └── contentinfo  [role: contentinfo]
-    ├── link "Privacy"  → /privacy
-    └── link "Terms"  → /terms
+    ├── [#7] link "Privacy"  → /privacy
+    └── [#8] link "Terms"  → /terms
 ```
+
+Each interactive element has a unique ID in brackets (`[#1]`, `[#2]`, etc.) that can be used with `click-id` and `type-id` commands.
 
 **JSON** — structured data with full navigation graph:
 
@@ -388,8 +393,10 @@ Bye.
 | Command | Description |
 |---------|-------------|
 | `visit <url>` / `open <url>` | Navigate to URL |
-| `click <selector>` | Click an element |
-| `type <selector> <value>` | Type into a field |
+| `click <selector>` | Click an element using CSS selector |
+| `click #<id>` | Click an element by its ID (e.g., `click #1`) |
+| `type <selector> <value>` | Type into a field using CSS selector |
+| `type #<id> <value>` | Type into a field by its ID (e.g., `type #3 hello`) |
 | `submit <selector> [name=value...]` | Submit a form |
 | `scroll [down\|up\|to-top\|to-bottom]` | Scroll the page |
 | `wait <selector> [timeout_ms]` | Wait for element |
@@ -414,8 +421,12 @@ let mut browser = Browser::new(BrowserConfig::default());
 // Navigate (creates a tab automatically)
 let tab = browser.navigate("https://example.com").await?;
 
-// Interact — click updates the tab automatically if navigation occurs
+// Interact using CSS selectors — click updates the tab automatically if navigation occurs
 let result = browser.click("a").await?;
+
+// Interact using element IDs — easier for AI agents
+let result = browser.click_by_id(1).await?;  // Click element with ID [#1]
+let result = browser.type_by_id(3, "search query").await?;  // Type into element [#3]
 
 // Chain interactions
 browser.type_text("input[name='q']", "search query")?;
@@ -429,6 +440,11 @@ browser.go_back().await?;
 // Access current state
 let page = browser.current_page().unwrap();
 let tree = page.semantic_tree();
+
+// Find element by ID
+if let Some(element) = page.find_by_element_id(1) {
+    println!("Element selector: {}", element.selector);
+}
 ```
 
 ### Page interaction
@@ -439,11 +455,17 @@ Interact with pages using the `interact` subcommand. Works at the HTTP level —
 # Click a link — follows href, returns new page
 pardus-browser interact https://example.com click 'a'
 
+# Click by element ID — easier for AI agents
+pardus-browser interact https://example.com click-id 1
+
 # Click a submit button — finds enclosing form, submits it
 pardus-browser interact https://example.com click 'button[type="submit"]'
 
 # Type into a field (returns the field state)
 pardus-browser interact https://example.com type 'input[name="q"]' 'search query'
+
+# Type by element ID — easier for AI agents
+pardus-browser interact https://example.com type-id 3 'search query'
 
 # Submit a form with field values
 pardus-browser interact https://example.com submit 'form' --field 'q=rust+language'

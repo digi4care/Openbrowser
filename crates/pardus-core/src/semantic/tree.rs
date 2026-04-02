@@ -28,6 +28,10 @@ pub struct SemanticNode {
     pub href: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// Unique ID for interactive elements (e.g., "1", "2", "3")
+    /// Used by AI agents to reference clickable elements like "click #1"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub element_id: Option<usize>,
     pub children: Vec<SemanticNode>,
 }
 
@@ -174,6 +178,7 @@ impl SemanticTree {
         let mut builder = TreeBuilder {
             base_url,
             stats: &mut stats,
+            next_element_id: 1,
         };
 
         let root = builder.build_from_html(html);
@@ -193,6 +198,7 @@ fn count_nodes(node: &SemanticNode) -> usize {
 struct TreeBuilder<'a> {
     base_url: &'a str,
     stats: &'a mut TreeStats,
+    next_element_id: usize,
 }
 
 impl<'a> TreeBuilder<'a> {
@@ -206,6 +212,7 @@ impl<'a> TreeBuilder<'a> {
             is_disabled: false,
             href: None,
             action: None,
+            element_id: None,
             children: Vec::new(),
         };
 
@@ -297,6 +304,15 @@ impl<'a> TreeBuilder<'a> {
             self.stats.actions += 1;
         }
 
+        // Assign element ID to interactive elements
+        let element_id = if is_interactive && !is_disabled {
+            let id = self.next_element_id;
+            self.next_element_id += 1;
+            Some(id)
+        } else {
+            None
+        };
+
         Some(SemanticNode {
             role,
             name,
@@ -305,6 +321,7 @@ impl<'a> TreeBuilder<'a> {
             is_disabled,
             href,
             action,
+            element_id,
             children: child_nodes,
         })
     }

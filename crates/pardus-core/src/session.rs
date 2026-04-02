@@ -48,6 +48,10 @@ pub struct SessionStore {
     raw_cookies: Mutex<Vec<StoredCookie>>,
     headers: Mutex<Vec<StoredHeader>>,
     local_storage: Mutex<HashMap<String, HashMap<String, String>>>,
+    /// If true, session data is kept in memory only and never written to disk.
+    ephemeral: bool,
+    /// If true, localStorage operations are disabled.
+    no_local_storage: bool,
 }
 
 impl SessionStore {
@@ -129,10 +133,36 @@ impl SessionStore {
             raw_cookies: Mutex::new(raw_cookies),
             headers: Mutex::new(headers),
             local_storage: Mutex::new(local_storage),
+            ephemeral: false,
+            no_local_storage: false,
+        })
+    }
+
+    /// Create an ephemeral (in-memory only) session store.
+    /// Data is kept in memory but never persisted to disk.
+    pub fn ephemeral(name: &str, cache_dir: &Path) -> SessionResult<Self> {
+        let session_dir = cache_dir.join("sessions").join(name);
+        // Don't create directories — we won't write to disk
+        Ok(Self {
+            session_dir,
+            cookies_path: PathBuf::new(),
+            headers_path: PathBuf::new(),
+            local_storage_path: PathBuf::new(),
+            jar: Mutex::new(cookie_store::CookieStore::default()),
+            raw_cookies: Mutex::new(Vec::new()),
+            headers: Mutex::new(Vec::new()),
+            local_storage: Mutex::new(HashMap::new()),
+            ephemeral: true,
+            no_local_storage: true,
         })
     }
 
     pub fn save(&self) -> SessionResult<()> {
+        // Ephemeral sessions skip disk persistence
+        if self.ephemeral {
+            return Ok(());
+        }
+
         {
             let raw = self.raw_cookies.lock();
             let mut lines = Vec::new();
@@ -235,6 +265,9 @@ impl SessionStore {
     }
 
     pub fn local_storage_set(&self, origin: &str, key: &str, value: &str) {
+        if self.no_local_storage {
+            return;
+        }
         let mut ls = self.local_storage.lock();
         if ls.len() >= MAX_LOCAL_STORAGE_ORIGINS && !ls.contains_key(origin) {
             tracing::warn!(
@@ -308,13 +341,12 @@ impl SessionStore {
             if let Ok(s) = hv.to_str() {
                 let cookie_str = s.trim();
                 if !cookie_str.is_empty() {
-                    let header = format!("Set-Cookie: {}", cookie_str);
-                    if let Err(e) = jar.parse(&header, url) {
+                    if let Err(e) = jar.parse(cookie_str, url) {
                         tracing::debug!("failed to parse cookie: {}", e);
                     } else {
                         raw.push(StoredCookie {
                             url: url.to_string(),
-                            header,
+                            header: cookie_str.to_string(),
                         });
                     }
                 }

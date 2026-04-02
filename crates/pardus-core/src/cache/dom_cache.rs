@@ -1,7 +1,6 @@
 //! LRU cache for parsed DOMs
 
 use crate::parser::lazy::LazyDom;
-use bytes::Bytes;
 use dashmap::DashMap;
 use lru::LruCache;
 use parking_lot::Mutex;

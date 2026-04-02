@@ -114,7 +114,7 @@ fn should_prefetch(hint: &ResourceHint) -> bool {
     match hint.resource_type {
         // Always pre-fetch these
         ResourceType::Stylesheet | ResourceType::Script | ResourceType::Font => true,
-        ResourceType::Image => hint.priority == Priority::Critical,
+        ResourceType::Image => hint.priority <= Priority::High,
         // Skip connection hints — they don't represent fetchable resources
         ResourceType::Document if hint.url.starts_with("http") => true,
         // Skip worker, manifest, other non-critical resources

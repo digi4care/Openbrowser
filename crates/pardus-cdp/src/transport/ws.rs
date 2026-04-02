@@ -25,7 +25,7 @@ pub async fn handle_websocket(
         uuid::Uuid::new_v4().to_string(),
     )));
 
-    let mut inactivity_timer = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs));
+    let inactivity_timer = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs));
     tokio::pin!(inactivity_timer);
 
     loop {
