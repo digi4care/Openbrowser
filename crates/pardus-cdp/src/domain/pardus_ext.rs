@@ -307,62 +307,65 @@ async fn handle_interact(
     fields_param: &Option<Value>,
     ctx: &DomainContext,
 ) -> Value {
+    // Resolve selector: if it looks like #N (element_id from semantic tree),
+    // use find_by_element_id. Otherwise treat as CSS selector.
+    let page_data = match get_page_data(ctx, target_id).await {
+        Some(d) => d,
+        None => return serde_json::json!({ "success": false, "error": "No active page" }),
+    };
+    let (html_str, url) = &page_data;
+    let page = pardus_core::Page::from_html(html_str, url);
+
+    // Try element_id lookup first when selector is "#N"
+    let handle = if let Some(num) = selector.strip_prefix('#') {
+        if let Ok(id) = num.parse::<usize>() {
+            page.find_by_element_id(id)
+        } else {
+            page.query(selector)
+        }
+    } else {
+        page.query(selector)
+    };
+
     match action {
         "click" => {
-            let page_data = get_page_data(ctx, target_id).await;
-            let href = page_data.as_ref().and_then(|(html_str, url)| {
-                let page = pardus_core::Page::from_html(&html_str, &url);
-                page.query(selector).and_then(|el| el.href.clone())
-            });
-
-            if let Some(href) = href {
-                match ctx.navigate(target_id, &href).await {
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
+            if let Some(href) = &h.href {
+                match ctx.navigate(target_id, href).await {
                     Ok(()) => serde_json::json!({ "success": true, "action": "click", "selector": selector }),
                     Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
                 }
-            } else if let Some((html_str, url)) = page_data {
-                let page = pardus_core::Page::from_html(&html_str, &url);
-                let exists = page.query(selector).is_some();
-                if exists {
-                    serde_json::json!({ "success": true, "action": "click", "selector": selector, "note": "Element exists but is not a link" })
-                } else {
-                    serde_json::json!({ "success": false, "error": "Element not found" })
-                }
             } else {
-                serde_json::json!({ "success": false, "error": "No active page" })
+                // Non-link element: check if interactive
+                if h.action.is_some() {
+                    serde_json::json!({ "success": true, "action": "click", "selector": selector, "tag": h.tag })
+                } else {
+                    serde_json::json!({ "success": true, "action": "click", "selector": selector, "note": "Element exists but is not a link" })
+                }
             }
         }
         "type" => {
-            match get_page_data(ctx, target_id).await {
-                Some((html_str, url)) => {
-                    let page = pardus_core::Page::from_html(&html_str, &url);
-                    match page.query(selector) {
-                        Some(handle) => {
-                            match pardus_core::interact::actions::type_text(&page, &handle, value) {
-                                Ok(_) => serde_json::json!({ "success": true, "action": "type", "selector": selector }),
-                                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
-                            }
-                        }
-                        None => serde_json::json!({ "success": false, "error": "Element not found" }),
-                    }
-                }
-                None => serde_json::json!({ "success": false, "error": "No active page" }),
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
+            match pardus_core::interact::actions::type_text(&page, &h, value) {
+                Ok(_) => serde_json::json!({ "success": true, "action": "type", "selector": selector }),
+                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
             }
         }
         "submit" => {
-            let form_found = get_page_data(ctx, target_id).await
-                .map(|(html_str, url)| {
-                    let page = pardus_core::Page::from_html(&html_str, &url);
-                    page.query(selector).is_some()
-                })
-                .unwrap_or(false);
-
-            if form_found {
+            if handle.is_some() {
                 let _ = fields_param;
                 serde_json::json!({ "success": true, "action": "submit", "selector": selector, "note": "Form element found" })
             } else {
                 serde_json::json!({ "success": false, "error": "Form not found" })
             }
+        }
+        "scroll" => {
+            // Scroll is handled client-side; just acknowledge
+            serde_json::json!({ "success": true, "action": "scroll" })
         }
         _ => serde_json::json!({
             "success": false,
