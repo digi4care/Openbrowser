@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "Openbrowser",
+  "project_id": "f76714a3-d3a9-4f1f-8218-dc375c807f6a"
+}
