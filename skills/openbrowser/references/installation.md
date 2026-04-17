@@ -21,7 +21,7 @@ cargo +nightly install --path crates/open-cli --features js
 cargo +nightly install --path crates/open-cli
 ```
 
-The binary installs to `~/.cargo/bin/open-browser`.
+Note: the repository directory is `Openbrowser`, but the installed binary is `open-browser`.
 
 ## Build Dependencies
 

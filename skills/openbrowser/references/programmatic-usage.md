@@ -33,7 +33,8 @@ let result = browser.type_by_id(3, "search query").await?;  // Type into element
 // Type using CSS selector
 browser.type_text("input[name='q']", "search query")?;
 
-// Submit a form
+// Submit a form (FormState accumulates field values)
+let state = browser.current_form_state()?;
 browser.submit("form", &state).await?;
 ```
 

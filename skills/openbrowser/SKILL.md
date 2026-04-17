@@ -104,21 +104,21 @@ Do not use open-browser for:
 
 | I want to... | Command | Key flags |
 |---|---|---|
-| Check what's on a page | `navigate <url>` | `--format tree` or `--format json` |
-| Test only interactive elements | `navigate <url>` | `--interactive-only` |
-| Click a link by element ID | `interact <url> click-id <id>` | `--format json` |
-| Click using CSS selector | `interact <url> click <selector>` | |
-| Type into a form field | `interact <url> type-id <id> <value>` | |
-| Submit a form | `interact <url> submit <selector> --field 'name=value'` | |
-| Wait for element to appear | `interact <url> wait <selector>` | `--timeout-ms 5000` |
-| Check network requests | `navigate <url>` | `--network-log` |
-| Get navigation graph | `navigate <url>` | `--format json --with-nav` |
-| Map entire site | `map <url>` | `--depth 3 --output kg.json` |
-| Run interactive session | `repl` | `--js` for JavaScript |
-| Automate via WebSocket | `serve` | `--host --port` |
-| Clean session data | `clean` | `--cookies-only` or `--cache-only` |
-| View PDF content | `navigate <url-to-pdf>` | Works automatically |
-| Use JavaScript execution | `navigate <url>` | `--js --wait-ms 5000` |
+| Check what's on a page | `open-browser navigate <url>` | `--format tree` or `--format json` |
+| Test only interactive elements | `open-browser navigate <url>` | `--interactive-only` |
+| Click a link by element ID | `open-browser interact <url> click-id <id>` | `--format json` |
+| Click using CSS selector | `open-browser interact <url> click <selector>` | |
+| Type into a form field | `open-browser interact <url> type-id <id> <value>` | |
+| Submit a form | `open-browser interact <url> submit <selector> --field 'name=value'` | |
+| Wait for element to appear | `open-browser interact <url> wait <selector>` | `--timeout-ms 5000` |
+| Check network requests | `open-browser navigate <url>` | `--network-log` |
+| Get navigation graph | `open-browser navigate <url>` | `--format json --with-nav` |
+| Map entire site | `open-browser map <url>` | `--depth 3 --output kg.json` |
+| Run interactive session | `open-browser repl` | `--js` for JavaScript |
+| Automate via WebSocket | `open-browser serve` | `--host --port` |
+| Clean session data | `open-browser clean` | `--cookies-only` or `--cache-only` |
+| View PDF content | `open-browser navigate <url-to-pdf>` | Works automatically |
+| Use JavaScript execution | `open-browser navigate <url>` | `--js --wait-ms 5000` |
 
 ## Workflow
 
@@ -175,7 +175,10 @@ Do not use open-browser for:
 ```
 1. Start REPL: open-browser repl
 2. Navigate to login page: visit <login-url>
-3. Submit credentials: type #<id> <username> then submit
+3. Type username: type #<id> <username>
+4. Submit form: submit <selector>
+5. Navigate to protected page: visit <protected-url>
+6. Verify session persisted (cookies maintained)
 4. Navigate to protected page: visit <protected-url>
 5. Verify session persisted (cookies maintained)
 ```

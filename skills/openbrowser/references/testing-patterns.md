@@ -43,7 +43,7 @@ This reference maps common testing patterns from Playwright to open-browser equi
 | `await page.fill('#email', 'test@test.com')` | `open-browser interact <url> type-id <id> 'test@test.com'` |
 | `await page.fill('#password', 'secret')` | `open-browser interact <url> type-id <id> 'secret'` |
 | `await page.click('button[type="submit"]')` | `open-browser interact <url> click-id <id>` or `submit 'form'` |
-| Login flow (multi-step) | Use REPL: `visit <url>` → `type #<id> <val>` → `submit 'form'` |
+| Login flow (multi-step) | Use REPL: `visit <url>` → `type #<id> <val>` → `submit <selector>` |
 
 ### Network
 
