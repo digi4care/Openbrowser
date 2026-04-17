@@ -45,3 +45,8 @@ bench-results/
 # AI coding assistant configs (local only)
 .opencode/
 .claude/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
